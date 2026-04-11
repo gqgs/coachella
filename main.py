@@ -88,10 +88,11 @@ class StageHeader(QWidget):
 class ScheduleGrid(QWidget):
     columnClicked = Signal(int)
     
-    def __init__(self, schedule_data, stages, parent=None):
+    def __init__(self, schedule_data, stages, app_ref, parent=None):
         super().__init__(parent)
         self.schedule_data = schedule_data
         self.stages = stages
+        self.app_ref = app_ref
         self.selected_index = -1
         self.setFixedWidth(TIME_COLUMN_WIDTH + (len(self.stages) * COLUMN_WIDTH))
         self.setFixedHeight((END_HOUR - START_HOUR) * PIXELS_PER_HOUR + 50)
@@ -203,9 +204,18 @@ class ScheduleGrid(QWidget):
             painter.setPen(QPen(QColor(255, 0, 0), 3))
             painter.drawLine(TIME_COLUMN_WIDTH, int(line_y), self.width(), int(line_y))
             
-            # Label - adjusted width and padding to prevent overflow
-            label_text = f"LIVE {now_pdt.strftime('%-I:%M %p')}"
-            painter.setBrush(QColor(255, 0, 0))
+            # Label - adjusted width and show recording indicator
+            is_recording = getattr(self.app_ref, "is_recording", False)
+            blink_on = getattr(self.app_ref, "blink_on", True)
+            
+            if is_recording and blink_on:
+                label_text = "🔴 RECORDING"
+                bg_color = QColor(200, 0, 0)
+            else:
+                label_text = f"LIVE {now_pdt.strftime('%-I:%M %p')}"
+                bg_color = QColor(255, 0, 0)
+                
+            painter.setBrush(bg_color)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(2, int(line_y) - 12, TIME_COLUMN_WIDTH - 4, 24, 5, 5)
             
@@ -219,6 +229,11 @@ class CoachellaApp(QMainWindow):
         self.setWindowTitle("Coachella 2026")
         self.resize(1400, 900)
         self.setStyleSheet("background-color: #121212; color: white;")
+
+        # Recording state
+        self.is_recording = False
+        self.blink_on = True
+        self.current_stage_index = 2 # Sahara default
 
         # Load configuration
         with open("config.json", "r") as f:
@@ -234,6 +249,10 @@ class CoachellaApp(QMainWindow):
 
         self.player = mpv.MPV(vo='gpu', ytdl=True, input_default_bindings=True, input_vo_keyboard=True)
         
+        # Register key binding for recording (press R in video window)
+        self.player.register_key_binding('r', self.toggle_recording)
+        self.player.register_key_binding('R', self.toggle_recording)
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -246,7 +265,7 @@ class CoachellaApp(QMainWindow):
         
         # Scrollable Schedule
         self.scroll = QScrollArea()
-        self.grid = ScheduleGrid(self.schedule_data, self.stages)
+        self.grid = ScheduleGrid(self.schedule_data, self.stages, self)
         self.grid.columnClicked.connect(self.load_stream)
         self.scroll.setWidget(self.grid)
         self.scroll.setWidgetResizable(True)
@@ -256,11 +275,39 @@ class CoachellaApp(QMainWindow):
         # Sync header horizontal scrolling with grid
         self.scroll.horizontalScrollBar().valueChanged.connect(self.sync_header)
 
+        # Timer for timeline updates (every minute)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.grid.update)
         self.timer.start(60000)
 
-        self.load_stream(2) # Default to Sahara
+        # Timer for blinking recording indicator (every 500ms)
+        self.blink_timer = QTimer(self)
+        self.blink_timer.timeout.connect(self.toggle_blink)
+        self.blink_timer.start(500)
+
+        self.load_stream(self.current_stage_index)
+
+    def toggle_blink(self):
+        if self.is_recording:
+            self.blink_on = not self.blink_on
+            self.grid.update()
+
+    def toggle_recording(self):
+        if not self.is_recording:
+            # Start recording
+            stage_name = self.stages[self.current_stage_index]["name"].replace(" ", "_")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"coachella_{stage_name}_{timestamp}.ts"
+            # Set the stream-record property in mpv
+            self.player['stream-record'] = filename
+            self.is_recording = True
+            print(f"Started recording to {filename}")
+        else:
+            # Stop recording by clearing the property
+            self.player['stream-record'] = ""
+            self.is_recording = False
+            print("Stopped recording")
+        self.grid.update()
 
     def sync_header(self, value):
         self.header.move(-value, 0)
@@ -268,6 +315,12 @@ class CoachellaApp(QMainWindow):
     def load_stream(self, index):
         if not (0 <= index < len(self.stages)):
             return
+        
+        # Stop recording if switching stages
+        if self.is_recording:
+            self.toggle_recording()
+
+        self.current_stage_index = index
         self.grid.setSelected(index)
         self.header.setSelected(index)
         data = self.stages[index]
