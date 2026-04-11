@@ -1,0 +1,61 @@
+{
+  "COACHELLA STAGE": [
+    {"artist": "Teddy Swims", "start": "17:30", "end": "18:20"},
+    {"artist": "The xx", "start": "19:00", "end": "19:55"},
+    {"artist": "Sabrina Carpenter", "start": "21:05", "end": "22:35"},
+    {"artist": "Anyma Presents ÆDEN", "start": "24:00", "end": "25:00"}
+  ],
+  "OUTDOOR THEATRE": [
+    {"artist": "Dabeull", "start": "16:00", "end": "16:50"},
+    {"artist": "Lykke Li", "start": "17:20", "end": "18:10"},
+    {"artist": "Dijon", "start": "18:40", "end": "19:30"},
+    {"artist": "Turnstile", "start": "20:05", "end": "21:00"},
+    {"artist": "Disclosure", "start": "22:35", "end": "23:50"},
+    {"artist": "Bonus Set from Do LaB", "start": "23:55", "end": "24:55"}
+  ],
+  "SAHARA": [
+    {"artist": "Youna", "start": "16:00", "end": "16:50"},
+    {"artist": "HUGEL", "start": "16:50", "end": "17:50"},
+    {"artist": "Marlon Hoffstadt", "start": "18:15", "end": "19:15"},
+    {"artist": "KATSEYE", "start": "20:00", "end": "20:45"},
+    {"artist": "Levity", "start": "21:15", "end": "22:20"},
+    {"artist": "Swae Lee", "start": "22:50", "end": "23:40"},
+    {"artist": "Sexyy Red", "start": "24:05", "end": "24:55"}
+  ],
+  "MOJAVE": [
+    {"artist": "BINI", "start": "16:15", "end": "17:00"},
+    {"artist": "Central Cee", "start": "17:30", "end": "18:15"},
+    {"artist": "Devo", "start": "18:45", "label_end": "19:40"},
+    {"artist": "Moby", "start": "20:10", "end": "21:00"},
+    {"artist": "Slayyyter", "start": "21:20", "end": "22:05"},
+    {"artist": "Ethel Cain", "start": "22:35", "end": "23:25"},
+    {"artist": "Blood Orange", "start": "23:55", "end": "24:45"}
+  ],
+  "GOBI": [
+    {"artist": "Bob Baker Marionettes", "start": "16:00", "end": "16:40"},
+    {"artist": "NewDad", "start": "16:45", "end": "17:25"},
+    {"artist": "Joyce Manor", "start": "17:30", "end": "18:10"},
+    {"artist": "CMAT", "start": "18:15", "end": "18:55"},
+    {"artist": "fakemink", "start": "19:20", "end": "20:00"},
+    {"artist": "Holly Humberstone", "start": "20:25", "end": "21:10"},
+    {"artist": "Joost", "start": "21:50", "end": "22:35"},
+    {"artist": "Creepy Nuts", "start": "23:05", "end": "23:55"}
+  ],
+  "SONORA": [
+    {"artist": "Wednesday", "start": "16:00", "end": "16:40"},
+    {"artist": "Fleshwater", "start": "16:50", "end": "17:30"},
+    {"artist": "The Two Lips", "start": "18:00", "end": "18:40"},
+    {"artist": "Ninajirachi", "start": "19:10", "end": "20:00"},
+    {"artist": "Cachirula & Loojan", "start": "20:25", "end": "21:05"},
+    {"artist": "February", "start": "21:15", "end": "21:45"},
+    {"artist": "Hot Mulligan", "start": "22:00", "end": "22:45"},
+    {"artist": "Carolina Durante", "start": "22:55", "end": "23:35"},
+    {"artist": "Not for Radio", "start": "23:50", "end": "24:50"}
+  ],
+  "QUASAR": [
+    {"artist": "Tiga", "start": "17:00", "end": "19:00"},
+    {"artist": "Deep Dish", "start": "19:00", "end": "21:00"},
+    {"artist": "PAWSA", "start": "21:00", "end": "23:00"},
+    {"artist": "Disco Lines", "start": "23:00", "end": "25:00"}
+  ]
+}

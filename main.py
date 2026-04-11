@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import locale
 from datetime import datetime
 try:
@@ -15,7 +16,6 @@ if "COACHELLA_BOOTSTRAP" not in os.environ:
     os.environ["LC_NUMERIC"] = "C"
     os.environ["LC_ALL"] = "C"
     os.environ["COACHELLA_BOOTSTRAP"] = "1"
-    
     try:
         potential_path = None
         for path in sys.path:
@@ -24,174 +24,254 @@ if "COACHELLA_BOOTSTRAP" not in os.environ:
                 if os.path.exists(test_path):
                     potential_path = test_path
                     break
-        
         if potential_path:
             current_ld = os.environ.get("LD_LIBRARY_PATH", "")
             if potential_path not in current_ld:
                 os.environ["LD_LIBRARY_PATH"] = potential_path + (":" + current_ld if current_ld else "")
-    except Exception:
-        pass
-
+    except Exception: pass
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
-# If we reached here, we are in the bootstrapped process
 try:
     locale.setlocale(locale.LC_NUMERIC, 'C')
     locale.setlocale(locale.LC_ALL, 'C')
-except Exception:
-    pass
+except Exception: pass
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QSizePolicy, QSpacerItem
+    QLabel, QScrollArea, QFrame
 )
-from PySide6.QtCore import Qt, QSize, Signal, QTimer
-from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen
+from PySide6.QtCore import Qt, Signal, QTimer, QRect, QPoint
+from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen, QBrush
 import mpv
 
 STREAM_DATA = [
-    {"id": "2NA7XUw51oo", "name": "Main Stage"},
-    {"id": "MdUBm8G41ZU", "name": "Outdoor Theatre"},
-    {"id": "NlrpPqb0vwo", "name": "Sahara"},
-    {"id": "HJVG2Ck3uuk", "name": "Mojave"},
-    {"id": "4C5p1tdRv6c", "name": "Gobi"},
-    {"id": "OGNPnQViI3g", "name": "Sonora"},
-    {"id": "1KANGsDaRvw", "name": "Yuma"}
+    {"id": "2NA7XUw51oo", "name": "COACHELLA STAGE", "color": "#00708D"},
+    {"id": "MdUBm8G41ZU", "name": "OUTDOOR THEATRE", "color": "#004C5A"},
+    {"id": "NlrpPqb0vwo", "name": "SAHARA", "color": "#7AA000"},
+    {"id": "HJVG2Ck3uuk", "name": "MOJAVE", "color": "#E35205"},
+    {"id": "4C5p1tdRv6c", "name": "GOBI", "color": "#F06292"},
+    {"id": "OGNPnQViI3g", "name": "SONORA", "color": "#C62828"},
+    {"id": "1KANGsDaRvw", "name": "QUASAR", "color": "#FFB300"}
 ]
 
-class ClickableLabel(QLabel):
-    clicked = Signal(int)
-    def __init__(self, index, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.index = index
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(140, 80)
-        self.setSelected(False)
+PIXELS_PER_HOUR = 150
+START_HOUR = 16 # 4 PM
+END_HOUR = 25   # 1 AM next day
+COLUMN_WIDTH = 180
+TIME_COLUMN_WIDTH = 80 # Increased to prevent overflow
 
-    def setSelected(self, selected):
-        if selected:
-            self.setStyleSheet("border: 4px solid white; border-radius: 4px;")
+class StageHeader(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(50)
+        self.setFixedWidth(TIME_COLUMN_WIDTH + (len(STREAM_DATA) * COLUMN_WIDTH))
+        self.selected_index = -1
+
+    def setSelected(self, index):
+        self.selected_index = index
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Spacer for time column
+        painter.fillRect(0, 0, TIME_COLUMN_WIDTH, self.height(), QColor("#121212"))
+
+        for i, stage in enumerate(STREAM_DATA):
+            x = TIME_COLUMN_WIDTH + (i * COLUMN_WIDTH)
+            color = QColor(stage["color"])
+            
+            # Header Background
+            painter.fillRect(x, 0, COLUMN_WIDTH, self.height(), color)
+            
+            # Selection indicator in header
+            if i == self.selected_index:
+                painter.setPen(QPen(Qt.GlobalColor.white, 4))
+                painter.drawRect(x + 2, 2, COLUMN_WIDTH - 4, self.height() - 4)
+
+            painter.setPen(Qt.GlobalColor.white)
+            painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+            painter.drawText(QRect(x, 0, COLUMN_WIDTH, self.height()), Qt.AlignmentFlag.AlignCenter, stage["name"])
+
+class ScheduleGrid(QWidget):
+    columnClicked = Signal(int)
+    
+    def __init__(self, schedule_data, parent=None):
+        super().__init__(parent)
+        self.schedule_data = schedule_data
+        self.selected_index = -1
+        self.setFixedWidth(TIME_COLUMN_WIDTH + (len(STREAM_DATA) * COLUMN_WIDTH))
+        self.setFixedHeight((END_HOUR - START_HOUR) * PIXELS_PER_HOUR + 50)
+        self.setMouseTracking(True)
+        
+    def setSelected(self, index):
+        self.selected_index = index
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        # Change cursor to pointing hand if over a stage column
+        if event.pos().x() > TIME_COLUMN_WIDTH:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
-            self.setStyleSheet("border: 2px solid rgba(255, 255, 255, 50); border-radius: 4px;")
+            self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def mousePressEvent(self, event):
-        self.clicked.emit(self.index)
+        x = event.pos().x()
+        if x > TIME_COLUMN_WIDTH:
+            col = (x - TIME_COLUMN_WIDTH) // COLUMN_WIDTH
+            if 0 <= col < len(STREAM_DATA):
+                self.columnClicked.emit(col)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Background
+        painter.fillRect(self.rect(), QColor("#121212"))
+        
+        # Draw columns
+        for i, stage in enumerate(STREAM_DATA):
+            x = TIME_COLUMN_WIDTH + (i * COLUMN_WIDTH)
+            base_color = QColor(stage["color"]).darker(300)
+            
+            # Highlight selected column
+            if i == self.selected_index:
+                painter.fillRect(x, 0, COLUMN_WIDTH, self.height(), base_color.lighter(150))
+                # Border for selected column
+                painter.setPen(QPen(QColor(stage["color"]), 2))
+                painter.drawRect(x, 0, COLUMN_WIDTH, self.height())
+            else:
+                painter.fillRect(x, 0, COLUMN_WIDTH, self.height(), base_color)
+
+        # Draw time labels
+        painter.setFont(QFont("Arial", 10))
+        for h in range(START_HOUR, END_HOUR + 1):
+            y = (h - START_HOUR) * PIXELS_PER_HOUR
+            display_h = h if h <= 12 else h - 12
+            if h >= 24: display_h = h - 24
+            if display_h == 0: display_h = 12
+            ampm = "PM" if h < 24 and h >= 12 else "AM"
+            time_str = f"{display_h} {ampm}"
+            
+            painter.setPen(QColor("#AAAAAA"))
+            painter.drawText(QRect(5, y - 10, TIME_COLUMN_WIDTH - 15, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, time_str)
+            
+            # Grid line
+            painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
+            painter.drawLine(TIME_COLUMN_WIDTH, y, self.width(), y)
+
+        # Draw Artist Boxes
+        for i, stage in enumerate(STREAM_DATA):
+            x = TIME_COLUMN_WIDTH + (i * COLUMN_WIDTH) + 5
+            artists = self.schedule_data.get(stage["name"], [])
+            for entry in artists:
+                try:
+                    def to_float_hour(t_str):
+                        h, m = map(int, t_str.split(':'))
+                        return h + m/60.0
+                    
+                    s_h = to_float_hour(entry["start"])
+                    e_h = to_float_hour(entry.get("end", entry["start"]))
+                    
+                    y_start = (s_h - START_HOUR) * PIXELS_PER_HOUR
+                    y_end = (e_h - START_HOUR) * PIXELS_PER_HOUR
+                    
+                    rect = QRect(x, int(y_start), COLUMN_WIDTH - 10, int(y_end - y_start))
+                    
+                    # Box Style
+                    painter.setBrush(QBrush(QColor(255, 255, 255, 240)))
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.drawRoundedRect(rect, 5, 5)
+                    
+                    # Highlight artist box if this stage is selected
+                    if i == self.selected_index:
+                        painter.setPen(QPen(QColor(stage["color"]), 2))
+                        painter.drawRoundedRect(rect, 5, 5)
+
+                    painter.setPen(Qt.GlobalColor.black)
+                    painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+                    painter.drawText(rect.adjusted(8, 8, -8, -20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, entry["artist"])
+                    
+                    painter.setFont(QFont("Arial", 9))
+                    painter.drawText(rect.adjusted(8, 0, -8, -8), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, f"{entry['start']}-{entry.get('end', '??')}")
+                except Exception as e: pass
+
+        # --- Draw Timeline ---
+        try:
+            now_pdt = datetime.now(PDT)
+        except:
+            from datetime import timezone, timedelta
+            now_pdt = datetime.now(timezone(timedelta(hours=-7)))
+        
+        hour = now_pdt.hour
+        if hour < 4: hour += 24
+        current_time_float = hour + (now_pdt.minute / 60.0)
+        
+        if START_HOUR <= current_time_float <= END_HOUR:
+            line_y = (current_time_float - START_HOUR) * PIXELS_PER_HOUR
+            painter.setPen(QPen(QColor(255, 0, 0), 3))
+            painter.drawLine(TIME_COLUMN_WIDTH, int(line_y), self.width(), int(line_y))
+            
+            # Label - adjusted width and padding to prevent overflow
+            label_text = f"LIVE {now_pdt.strftime('%-I:%M %p')}"
+            painter.setBrush(QColor(255, 0, 0))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(2, int(line_y) - 12, TIME_COLUMN_WIDTH - 4, 24, 5, 5)
+            
+            painter.setPen(Qt.GlobalColor.white)
+            painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+            painter.drawText(QRect(2, int(line_y) - 12, TIME_COLUMN_WIDTH - 4, 24), Qt.AlignmentFlag.AlignCenter, label_text)
 
 class CoachellaApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Coachella 2026")
-        self.resize(1280, 720)
+        self.resize(1400, 900)
+        self.setStyleSheet("background-color: #121212; color: white;")
 
-        # Initialize mpv player in its own window
-        self.player = mpv.MPV(
-            vo='gpu',
-            ytdl=True,
-            input_default_bindings=True,
-            input_vo_keyboard=True
-        )
+        with open("schedule.json", "r") as f:
+            self.schedule_data = json.load(f)
 
-        # Load schedule image
-        self.schedule_pixmap = QPixmap("schedule.jpg")
+        self.player = mpv.MPV(vo='gpu', ytdl=True, input_default_bindings=True, input_vo_keyboard=True)
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        central_widget.setStyleSheet("background: transparent;")
-        
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(40, 40, 40, 40)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        # Spacer to push thumbnails to bottom
-        main_layout.addStretch()
+        # Fixed Header
+        self.header = StageHeader()
+        main_layout.addWidget(self.header)
+        
+        # Scrollable Schedule
+        self.scroll = QScrollArea()
+        self.grid = ScheduleGrid(self.schedule_data)
+        self.grid.columnClicked.connect(self.load_stream)
+        self.scroll.setWidget(self.grid)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setStyleSheet("border: none;")
+        main_layout.addWidget(self.scroll)
 
-        # Thumbnails Row
-        self.thumbs_layout = QHBoxLayout()
-        self.thumbs_layout.setSpacing(15)
-        self.thumbs_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        self.thumb_widgets = []
-        for i in range(len(STREAM_DATA)):
-            thumb = ClickableLabel(i)
-            pixmap = QPixmap(f"assets/thumb_{i}.jpg")
-            if not pixmap.isNull():
-                # Scale slightly smaller than label to fit border
-                thumb.setPixmap(pixmap.scaled(132, 72, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
-                thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            else:
-                thumb.setText(STREAM_DATA[i]["name"])
-                thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                thumb.setStyleSheet(thumb.styleSheet() + " color: white; background: rgba(0,0,0,150); font-size: 10px;")
-            
-            thumb.clicked.connect(self.load_stream)
-            self.thumbs_layout.addWidget(thumb)
-            self.thumb_widgets.append(thumb)
-        
-        main_layout.addLayout(self.thumbs_layout)
+        # Sync header horizontal scrolling with grid (if window too narrow)
+        self.scroll.horizontalScrollBar().valueChanged.connect(self.sync_header)
 
-        # Timer to update timeline every minute
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update)
+        self.timer.timeout.connect(self.grid.update)
         self.timer.start(60000)
 
-        # Initial stream
         self.load_stream(2) # Default to Sahara
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        
-        # Draw background schedule image
-        if not self.schedule_pixmap.isNull():
-            scaled_pix = self.schedule_pixmap.scaled(
-                self.size(), 
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
-                Qt.TransformationMode.SmoothTransformation
-            )
-            x = (self.width() - scaled_pix.width()) // 2
-            y = (self.height() - scaled_pix.height()) // 2
-            painter.drawPixmap(x, y, scaled_pix)
-            
-            # --- Timeline Calculation ---
-            scale_factor = scaled_pix.height() / 1350.0
-            y_offset_in_scaled = y
-            y_4pm_scaled = 210 * scale_factor
-            y_12am_scaled = 1205 * scale_factor
-            pixels_per_hour = (y_12am_scaled - y_4pm_scaled) / 8.0
-            
-            try:
-                now_pdt = datetime.now(PDT)
-            except:
-                from datetime import timezone, timedelta
-                now_pdt = datetime.now(timezone(timedelta(hours=-7)))
-            
-            hour = now_pdt.hour
-            if hour < 4:
-                hour += 24
-            
-            hours_since_4pm = (hour - 16) + (now_pdt.minute / 60.0)
-            
-            if 0 <= hours_since_4pm <= 10:
-                line_y = y_offset_in_scaled + y_4pm_scaled + (hours_since_4pm * pixels_per_hour)
-                pen = QPen(QColor(255, 0, 0, 200))
-                pen.setWidth(4)
-                painter.setPen(pen)
-                painter.drawLine(0, int(line_y), self.width(), int(line_y))
-                
-                # Draw LIVE indicator
-                painter.setPen(QColor(255, 0, 0))
-                painter.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-                painter.drawText(20, int(line_y) - 10, f"LIVE {now_pdt.strftime('%H:%M')} PDT")
+    def sync_header(self, value):
+        self.header.move(-value, 0)
 
     def load_stream(self, index):
-        # Update UI selection
-        for i, thumb in enumerate(self.thumb_widgets):
-            thumb.setSelected(i == index)
-            
-        # Play in separate window
+        self.grid.setSelected(index)
+        self.header.setSelected(index)
         data = STREAM_DATA[index]
-        url = f"https://www.youtube.com/watch?v={data['id']}"
-        self.player.play(url)
-        # Update mpv window title
-        self.player.title = f"{data['name']} - Live from Coachella 2026"
+        self.player.play(f"https://www.youtube.com/watch?v={data['id']}")
+        self.player.title = f"{data['name']} - Coachella 2026"
 
     def closeEvent(self, event):
         self.player.terminate()
