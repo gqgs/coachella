@@ -1,18 +1,22 @@
 import sys
 import os
+import locale
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from datetime import timezone, timedelta
+    PDT = timezone(timedelta(hours=-7))
+else:
+    PDT = ZoneInfo("America/Los_Angeles")
 
 # --- BOOTSTRAP: Set environment variables and relaunch if necessary ---
-# This must happen before ANY other imports (even locale) to ensure C-libraries 
-# like libmpv and Qt pick up the environment correctly.
 if "COACHELLA_BOOTSTRAP" not in os.environ:
     os.environ["LC_NUMERIC"] = "C"
     os.environ["LC_ALL"] = "C"
     os.environ["COACHELLA_BOOTSTRAP"] = "1"
     
-    # Also try to fix LD_LIBRARY_PATH if we are in a venv with PySide6
-    # This avoids importing PySide6 before the relaunch
     try:
-        # Simple heuristic to find PySide6 in venv without importing
         potential_path = None
         for path in sys.path:
             if "site-packages" in path:
@@ -31,7 +35,6 @@ if "COACHELLA_BOOTSTRAP" not in os.environ:
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 # If we reached here, we are in the bootstrapped process
-import locale
 try:
     locale.setlocale(locale.LC_NUMERIC, 'C')
     locale.setlocale(locale.LC_ALL, 'C')
@@ -40,10 +43,10 @@ except Exception:
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QPushButton, QFrame, QSizePolicy
+    QLabel, QSizePolicy, QSpacerItem
 )
-from PySide6.QtCore import Qt, QSize, Signal
-from PySide6.QtGui import QPixmap, QIcon, QFont, QPalette, QColor
+from PySide6.QtCore import Qt, QSize, Signal, QTimer
+from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen
 import mpv
 
 STREAM_DATA = [
@@ -62,124 +65,137 @@ class ClickableLabel(QLabel):
         super().__init__(*args, **kwargs)
         self.index = index
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(140, 80)
+        self.setSelected(False)
+
+    def setSelected(self, selected):
+        if selected:
+            self.setStyleSheet("border: 4px solid white; border-radius: 4px;")
+        else:
+            self.setStyleSheet("border: 2px solid rgba(255, 255, 255, 50); border-radius: 4px;")
 
     def mousePressEvent(self, event):
         self.clicked.emit(self.index)
-
-class MpvWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.container = QWidget(self)
-        self.container.setStyleSheet("background-color: black;")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.container)
-
-        wid = int(self.container.winId())
-        # We pass log_handler=print to see what's happening if it still fails
-        self.player = mpv.MPV(wid=str(wid),
-                              vo='gpu',
-                              ytdl=True,
-                              input_default_bindings=True,
-                              input_vo_keyboard=True)
-        
-    def play(self, url):
-        self.player.play(url)
-
-    def toggle_fullscreen(self):
-        self.player.fullscreen = not self.player.fullscreen
-
-    def mouseDoubleClickEvent(self, event):
-        self.toggle_fullscreen()
 
 class CoachellaApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Coachella 2026")
-        self.setStyleSheet("background-color: black; color: white;")
         self.resize(1280, 720)
 
+        # Initialize mpv player in its own window
+        self.player = mpv.MPV(
+            vo='gpu',
+            ytdl=True,
+            input_default_bindings=True,
+            input_vo_keyboard=True
+        )
+
+        # Load schedule image
+        self.schedule_pixmap = QPixmap("schedule.jpg")
+        
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(40, 40, 40, 40)
-        main_layout.setSpacing(40)
-
-        # Left Column
-        left_column = QVBoxLayout()
-        left_column.setAlignment(Qt.AlignmentFlag.AlignTop)
+        central_widget.setStyleSheet("background: transparent;")
         
-        self.title_label = QLabel("")
-        self.title_label.setFont(QFont("Arial", 36, QFont.Weight.Bold))
-        self.title_label.setStyleSheet("color: white;")
-        self.title_label.setWordWrap(True)
-        left_column.addWidget(self.title_label)
-
-        channel_label = QLabel("Coachella")
-        channel_label.setFont(QFont("Arial", 14))
-        channel_label.setStyleSheet("color: #AAAAAA; margin-top: 10px;")
-        left_column.addWidget(channel_label)
-
-        watch_btn = QPushButton("Watch live")
-        watch_btn.setFixedSize(120, 40)
-        watch_btn.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: 1px solid white;
-                border-radius: 20px;
-                color: white;
-                font-weight: bold;
-                margin-top: 30px;
-            }
-            QPushButton:hover {
-                background-color: white;
-                color: black;
-            }
-        """)
-        left_column.addWidget(watch_btn)
-
-        left_column.addStretch()
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(40, 40, 40, 40)
+        
+        # Spacer to push thumbnails to bottom
+        main_layout.addStretch()
 
         # Thumbnails Row
-        thumbs_layout = QHBoxLayout()
-        thumbs_layout.setSpacing(10)
+        self.thumbs_layout = QHBoxLayout()
+        self.thumbs_layout.setSpacing(15)
+        self.thumbs_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.thumb_widgets = []
         for i in range(len(STREAM_DATA)):
             thumb = ClickableLabel(i)
             pixmap = QPixmap(f"assets/thumb_{i}.jpg")
-            if pixmap.isNull():
+            if not pixmap.isNull():
+                # Scale slightly smaller than label to fit border
+                thumb.setPixmap(pixmap.scaled(132, 72, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
+                thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            else:
                 thumb.setText(STREAM_DATA[i]["name"])
                 thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                thumb.setFixedSize(120, 68)
-                thumb.setStyleSheet("border: 1px solid #333; font-size: 10px;")
-            else:
-                thumb.setPixmap(pixmap.scaled(120, 68, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
-                thumb.setFixedSize(120, 68)
+                thumb.setStyleSheet(thumb.styleSheet() + " color: white; background: rgba(0,0,0,150); font-size: 10px;")
+            
             thumb.clicked.connect(self.load_stream)
-            thumbs_layout.addWidget(thumb)
+            self.thumbs_layout.addWidget(thumb)
+            self.thumb_widgets.append(thumb)
         
-        left_column.addLayout(thumbs_layout)
+        main_layout.addLayout(self.thumbs_layout)
 
-        main_layout.addLayout(left_column, 1)
-
-        # Right Column (Video)
-        self.video_widget = MpvWidget()
-        main_layout.addWidget(self.video_widget, 2)
+        # Timer to update timeline every minute
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update)
+        self.timer.start(60000)
 
         # Initial stream
         self.load_stream(2) # Default to Sahara
 
-    def load_stream(self, index):
-        data = STREAM_DATA[index]
-        self.title_label.setText(f"{data['name']} - Live from Coachella 2026")
-        url = f"https://www.youtube.com/watch?v={data['id']}"
-        self.video_widget.play(url)
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        
+        # Draw background schedule image
+        if not self.schedule_pixmap.isNull():
+            scaled_pix = self.schedule_pixmap.scaled(
+                self.size(), 
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
+                Qt.TransformationMode.SmoothTransformation
+            )
+            x = (self.width() - scaled_pix.width()) // 2
+            y = (self.height() - scaled_pix.height()) // 2
+            painter.drawPixmap(x, y, scaled_pix)
+            
+            # --- Timeline Calculation ---
+            scale_factor = scaled_pix.height() / 1350.0
+            y_offset_in_scaled = y
+            y_4pm_scaled = 210 * scale_factor
+            y_12am_scaled = 1205 * scale_factor
+            pixels_per_hour = (y_12am_scaled - y_4pm_scaled) / 8.0
+            
+            try:
+                now_pdt = datetime.now(PDT)
+            except:
+                from datetime import timezone, timedelta
+                now_pdt = datetime.now(timezone(timedelta(hours=-7)))
+            
+            hour = now_pdt.hour
+            if hour < 4:
+                hour += 24
+            
+            hours_since_4pm = (hour - 16) + (now_pdt.minute / 60.0)
+            
+            if 0 <= hours_since_4pm <= 10:
+                line_y = y_offset_in_scaled + y_4pm_scaled + (hours_since_4pm * pixels_per_hour)
+                pen = QPen(QColor(255, 0, 0, 200))
+                pen.setWidth(4)
+                painter.setPen(pen)
+                painter.drawLine(0, int(line_y), self.width(), int(line_y))
+                
+                # Draw LIVE indicator
+                painter.setPen(QColor(255, 0, 0))
+                painter.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+                painter.drawText(20, int(line_y) - 10, f"LIVE {now_pdt.strftime('%H:%M')} PDT")
 
-    def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_F:
-            self.video_widget.toggle_fullscreen()
-        elif event.key() == Qt.Key.Key_Escape:
-            if self.video_widget.player.fullscreen:
-                self.video_widget.player.fullscreen = False
+    def load_stream(self, index):
+        # Update UI selection
+        for i, thumb in enumerate(self.thumb_widgets):
+            thumb.setSelected(i == index)
+            
+        # Play in separate window
+        data = STREAM_DATA[index]
+        url = f"https://www.youtube.com/watch?v={data['id']}"
+        self.player.play(url)
+        # Update mpv window title
+        self.player.title = f"{data['name']} - Live from Coachella 2026"
+
+    def closeEvent(self, event):
+        self.player.terminate()
+        event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
