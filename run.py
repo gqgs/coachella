@@ -14,6 +14,9 @@ def run_command(command, description):
     return True
 
 def main():
+    # 0. Update yt-dlp (frequently needed for live streams)
+    run_command(["-m", "pip", "install", "-U", "yt-dlp"], "Updating yt-dlp to latest version")
+
     # 1. Download descriptions
     if not run_command(["download_descriptions.py"], "Downloading YouTube descriptions"):
         print("Continuing anyway (using existing cache if available)...")

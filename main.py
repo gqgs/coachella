@@ -217,7 +217,9 @@ class CoachellaApp(QMainWindow):
         else:
             self.schedule_data = {}
 
-        self.player = mpv.MPV(vo='gpu', ytdl=True, input_default_bindings=True, input_vo_keyboard=True)
+        self.player = mpv.MPV(vo='gpu', ytdl=True, input_default_bindings=True, input_vo_keyboard=True, log_handler=print)
+        # Add some stability options for YouTube Live
+        self.player['ytdl-raw-options'] = 'ignore-config=,user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"'
         self.player.register_key_binding('r', self.toggle_recording)
         self.player.register_key_binding('R', self.toggle_recording)
 
