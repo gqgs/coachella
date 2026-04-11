@@ -44,16 +44,6 @@ from PySide6.QtCore import Qt, Signal, QTimer, QRect, QPoint
 from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen, QBrush
 import mpv
 
-STREAM_DATA = [
-    {"id": "2NA7XUw51oo", "name": "COACHELLA STAGE", "color": "#00708D"},
-    {"id": "MdUBm8G41ZU", "name": "OUTDOOR THEATRE", "color": "#004C5A"},
-    {"id": "NlrpPqb0vwo", "name": "SAHARA", "color": "#7AA000"},
-    {"id": "HJVG2Ck3uuk", "name": "MOJAVE", "color": "#E35205"},
-    {"id": "4C5p1tdRv6c", "name": "GOBI", "color": "#F06292"},
-    {"id": "OGNPnQViI3g", "name": "SONORA", "color": "#C62828"},
-    {"id": "1KANGsDaRvw", "name": "QUASAR", "color": "#FFB300"}
-]
-
 PIXELS_PER_HOUR = 150
 START_HOUR = 16 # 4 PM
 END_HOUR = 25   # 1 AM next day
