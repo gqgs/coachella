@@ -1,46 +1,67 @@
-# Coachella 2026 Desktop App
+# Coachella Desktop App
 
-A desktop application reproducing the Coachella live stream interface.
-
-## Prerequisites
-
-- Python 3.x
-- `mpv` and `libmpv` installed on your system.
-  - On Arch Linux: `sudo pacman -S mpv`
-  - On Ubuntu/Debian: `sudo apt install mpv libmpv-dev`
-  - On macOS: `brew install mpv`
-- `yt-dlp` should be available (installed via pip in requirements).
-
-## Setup
-
-1. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate
-   ```
-
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Download thumbnails:
-   ```bash
-   python download_thumbnails.py
-   ```
-
-## Running the App
-
-```bash
-source venv/bin/activate
-python main.py
-```
+A high-performance desktop application for watching Coachella livestreams with a perfectly synced, interactive schedule. Built with Python, PySide6, and mpv.
 
 ## Features
 
-- **Stream Switching**: Click on any of the 7 stage thumbnails at the bottom left to switch the live stream.
-- **Embedded Player**: Uses `mpv` for high-performance video playback.
-- **Fullscreen**: 
-  - Double-click the video area to toggle fullscreen.
-  - Press `F` to toggle fullscreen.
-  - Press `Esc` to exit fullscreen.
+- **Interactive Schedule**: A programmatically rendered, scrollable grid showing the full lineup across all 7 stages.
+- **Live Time Tracking**: A precise red timeline that indicates exactly who is playing right now in Pacific Daylight Time (PDT).
+- **Column-Based Navigation**: Click anywhere on a stage's column to instantly switch the video player to that stream.
+- **Automated Sync**: One-command synchronization that fetches the latest artist schedule directly from official YouTube descriptions.
+- **Native Performance**: Uses `mpv` as the video backend for low-latency, high-quality streaming.
+
+## Prerequisites
+
+- **Python 3.9+**
+- **mpv player**: The application requires `libmpv` to be installed on your system.
+  - **Arch Linux**: `sudo pacman -S mpv`
+  - **Ubuntu/Debian**: `sudo apt install mpv libmpv-dev`
+  - **macOS**: `brew install mpv`
+
+## Installation
+
+1. **Clone and Setup Environment**:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows use: venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+
+2. **Sync the Schedule**:
+   This script fetches the current lineup from the stream descriptions defined in `config.json`.
+   ```bash
+   python sync_schedule.py
+   ```
+
+## Usage
+
+Start the application:
+```bash
+python main.py
+```
+
+- **Switch Stages**: Click on any column in the schedule grid.
+- **Fullscreen**: Toggle fullscreen in the video player using the `F` key or double-click.
+- **Exit Fullscreen**: Press `Esc`.
+
+## Configuration
+
+The application is entirely data-driven. To update stream URLs or stage colors for next year, simply edit `config.json`:
+
+```json
+{
+  "STAGES": [
+    {
+      "name": "SAHARA",
+      "color": "#7AA000",
+      "url": "https://www.youtube.com/watch?v=..."
+    },
+    ...
+  ]
+}
+```
+
+## Troubleshooting
+
+- **Library Errors on Linux**: The app includes a bootstrap loader that handles Qt library version conflicts common on rolling-release distros (like Arch). It will automatically relaunch itself with the correct environment variables if needed.
+- **Timezone**: The app uses `America/Los_Angeles` (PDT) for the timeline regardless of your local system time, matching the official festival schedule.

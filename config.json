@@ -1,0 +1,46 @@
+{
+  "STAGES": [
+    {
+      "id": "2NA7XUw51oo",
+      "name": "COACHELLA STAGE",
+      "color": "#00708D",
+      "url": "https://www.youtube.com/watch?v=2NA7XUw51oo"
+    },
+    {
+      "id": "MdUBm8G41ZU",
+      "name": "OUTDOOR THEATRE",
+      "color": "#004C5A",
+      "url": "https://www.youtube.com/watch?v=MdUBm8G41ZU"
+    },
+    {
+      "id": "NlrpPqb0vwo",
+      "name": "SAHARA",
+      "color": "#7AA000",
+      "url": "https://www.youtube.com/watch?v=NlrpPqb0vwo"
+    },
+    {
+      "id": "HJVG2Ck3uuk",
+      "name": "MOJAVE",
+      "color": "#E35205",
+      "url": "https://www.youtube.com/watch?v=HJVG2Ck3uuk"
+    },
+    {
+      "id": "4C5p1tdRv6c",
+      "name": "GOBI",
+      "color": "#F06292",
+      "url": "https://www.youtube.com/watch?v=4C5p1tdRv6c"
+    },
+    {
+      "id": "OGNPnQViI3g",
+      "name": "SONORA",
+      "color": "#C62828",
+      "url": "https://www.youtube.com/watch?v=OGNPnQViI3g"
+    },
+    {
+      "id": "1KANGsDaRvw",
+      "name": "QUASAR",
+      "color": "#FFB300",
+      "url": "https://www.youtube.com/watch?v=1KANGsDaRvw"
+    }
+  ]
+}

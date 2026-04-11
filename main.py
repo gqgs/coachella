@@ -61,10 +61,11 @@ COLUMN_WIDTH = 180
 TIME_COLUMN_WIDTH = 80 # Increased to prevent overflow
 
 class StageHeader(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, stages, parent=None):
         super().__init__(parent)
+        self.stages = stages
         self.setFixedHeight(50)
-        self.setFixedWidth(TIME_COLUMN_WIDTH + (len(STREAM_DATA) * COLUMN_WIDTH))
+        self.setFixedWidth(TIME_COLUMN_WIDTH + (len(self.stages) * COLUMN_WIDTH))
         self.selected_index = -1
 
     def setSelected(self, index):
@@ -78,7 +79,7 @@ class StageHeader(QWidget):
         # Spacer for time column
         painter.fillRect(0, 0, TIME_COLUMN_WIDTH, self.height(), QColor("#121212"))
 
-        for i, stage in enumerate(STREAM_DATA):
+        for i, stage in enumerate(self.stages):
             x = TIME_COLUMN_WIDTH + (i * COLUMN_WIDTH)
             color = QColor(stage["color"])
             
@@ -97,11 +98,12 @@ class StageHeader(QWidget):
 class ScheduleGrid(QWidget):
     columnClicked = Signal(int)
     
-    def __init__(self, schedule_data, parent=None):
+    def __init__(self, schedule_data, stages, parent=None):
         super().__init__(parent)
         self.schedule_data = schedule_data
+        self.stages = stages
         self.selected_index = -1
-        self.setFixedWidth(TIME_COLUMN_WIDTH + (len(STREAM_DATA) * COLUMN_WIDTH))
+        self.setFixedWidth(TIME_COLUMN_WIDTH + (len(self.stages) * COLUMN_WIDTH))
         self.setFixedHeight((END_HOUR - START_HOUR) * PIXELS_PER_HOUR + 50)
         self.setMouseTracking(True)
         
@@ -120,7 +122,7 @@ class ScheduleGrid(QWidget):
         x = event.pos().x()
         if x > TIME_COLUMN_WIDTH:
             col = (x - TIME_COLUMN_WIDTH) // COLUMN_WIDTH
-            if 0 <= col < len(STREAM_DATA):
+            if 0 <= col < len(self.stages):
                 self.columnClicked.emit(col)
 
     def paintEvent(self, event):
@@ -131,14 +133,13 @@ class ScheduleGrid(QWidget):
         painter.fillRect(self.rect(), QColor("#121212"))
         
         # Draw columns
-        for i, stage in enumerate(STREAM_DATA):
+        for i, stage in enumerate(self.stages):
             x = TIME_COLUMN_WIDTH + (i * COLUMN_WIDTH)
             base_color = QColor(stage["color"]).darker(300)
             
             # Highlight selected column
             if i == self.selected_index:
                 painter.fillRect(x, 0, COLUMN_WIDTH, self.height(), base_color.lighter(150))
-                # Border for selected column
                 painter.setPen(QPen(QColor(stage["color"]), 2))
                 painter.drawRect(x, 0, COLUMN_WIDTH, self.height())
             else:
@@ -162,7 +163,7 @@ class ScheduleGrid(QWidget):
             painter.drawLine(TIME_COLUMN_WIDTH, y, self.width(), y)
 
         # Draw Artist Boxes
-        for i, stage in enumerate(STREAM_DATA):
+        for i, stage in enumerate(self.stages):
             x = TIME_COLUMN_WIDTH + (i * COLUMN_WIDTH) + 5
             artists = self.schedule_data.get(stage["name"], [])
             for entry in artists:
@@ -179,12 +180,10 @@ class ScheduleGrid(QWidget):
                     
                     rect = QRect(x, int(y_start), COLUMN_WIDTH - 10, int(y_end - y_start))
                     
-                    # Box Style
                     painter.setBrush(QBrush(QColor(255, 255, 255, 240)))
                     painter.setPen(Qt.PenStyle.NoPen)
                     painter.drawRoundedRect(rect, 5, 5)
                     
-                    # Highlight artist box if this stage is selected
                     if i == self.selected_index:
                         painter.setPen(QPen(QColor(stage["color"]), 2))
                         painter.drawRoundedRect(rect, 5, 5)
@@ -195,7 +194,8 @@ class ScheduleGrid(QWidget):
                     
                     painter.setFont(QFont("Arial", 9))
                     painter.drawText(rect.adjusted(8, 0, -8, -8), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, f"{entry['start']}-{entry.get('end', '??')}")
-                except Exception as e: pass
+                except Exception: pass
+
 
         # --- Draw Timeline ---
         try:
@@ -230,8 +230,17 @@ class CoachellaApp(QMainWindow):
         self.resize(1400, 900)
         self.setStyleSheet("background-color: #121212; color: white;")
 
-        with open("schedule.json", "r") as f:
-            self.schedule_data = json.load(f)
+        # Load configuration
+        with open("config.json", "r") as f:
+            config = json.load(f)
+            self.stages = config.get("STAGES", [])
+
+        # Load schedule
+        if os.path.exists("schedule.json"):
+            with open("schedule.json", "r") as f:
+                self.schedule_data = json.load(f)
+        else:
+            self.schedule_data = {}
 
         self.player = mpv.MPV(vo='gpu', ytdl=True, input_default_bindings=True, input_vo_keyboard=True)
         
@@ -242,19 +251,19 @@ class CoachellaApp(QMainWindow):
         main_layout.setSpacing(0)
         
         # Fixed Header
-        self.header = StageHeader()
+        self.header = StageHeader(self.stages)
         main_layout.addWidget(self.header)
         
         # Scrollable Schedule
         self.scroll = QScrollArea()
-        self.grid = ScheduleGrid(self.schedule_data)
+        self.grid = ScheduleGrid(self.schedule_data, self.stages)
         self.grid.columnClicked.connect(self.load_stream)
         self.scroll.setWidget(self.grid)
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("border: none;")
         main_layout.addWidget(self.scroll)
 
-        # Sync header horizontal scrolling with grid (if window too narrow)
+        # Sync header horizontal scrolling with grid
         self.scroll.horizontalScrollBar().valueChanged.connect(self.sync_header)
 
         self.timer = QTimer(self)
@@ -267,11 +276,14 @@ class CoachellaApp(QMainWindow):
         self.header.move(-value, 0)
 
     def load_stream(self, index):
+        if not (0 <= index < len(self.stages)):
+            return
         self.grid.setSelected(index)
         self.header.setSelected(index)
-        data = STREAM_DATA[index]
-        self.player.play(f"https://www.youtube.com/watch?v={data['id']}")
+        data = self.stages[index]
+        self.player.play(data["url"])
         self.player.title = f"{data['name']} - Coachella 2026"
+
 
     def closeEvent(self, event):
         self.player.terminate()
