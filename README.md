@@ -5,6 +5,7 @@ A high-performance desktop application for watching Coachella livestreams with a
 ## Features
 
 - **Interactive Schedule**: A programmatically rendered, scrollable grid showing the full lineup across all 7 stages.
+- **Multi-Day Support**: Switch between Friday, Saturday, and Sunday schedules using tabs.
 - **Live Time Tracking**: A precise red timeline that indicates exactly who is playing right now in Pacific Daylight Time (PDT).
 - **Column-Based Navigation**: Click anywhere on a stage's column to instantly switch the video player to that stream.
 - **Automated Sync**: One-command synchronization that fetches the latest artist schedule directly from official YouTube descriptions.
@@ -28,41 +29,24 @@ A high-performance desktop application for watching Coachella livestreams with a
    pip install -r requirements.txt
    ```
 
-2. **Sync the Schedule**:
-   This script fetches the current lineup from the stream descriptions defined in `config.json`.
-   ```bash
-   python sync_schedule.py
-   ```
-
 ## Usage
 
-Start the application:
+To automatically download the latest descriptions, sync the schedule, and launch the app in one command:
+
 ```bash
-python main.py
+python run.py
 ```
 
 - **Switch Stages**: Click on any column in the schedule grid.
+- **Switch Days**: Click the tabs at the top (aligned with the stage columns).
 - **Fullscreen**: Toggle fullscreen in the video player using the `F` key or double-click.
-- **Exit Fullscreen**: Press `Esc`.
+- **Recording**: Press `R` in the video window to start/stop saving the stream to a local file.
 
 ## Configuration
 
-The application is entirely data-driven. To update stream URLs or stage colors for next year, simply edit `config.json`:
-
-```json
-{
-  "STAGES": [
-    {
-      "name": "SAHARA",
-      "color": "#7AA000",
-      "url": "https://www.youtube.com/watch?v=..."
-    },
-    ...
-  ]
-}
-```
+The application is entirely data-driven. To update stream URLs or stage colors for future years, simply edit `config.json`.
 
 ## Troubleshooting
 
-- **Library Errors on Linux**: The app includes a bootstrap loader that handles Qt library version conflicts common on rolling-release distros (like Arch). It will automatically relaunch itself with the correct environment variables if needed.
+- **Library Errors on Linux**: The app includes a bootstrap loader that handles Qt library version conflicts common on rolling-release distros (like Arch).
 - **Timezone**: The app uses `America/Los_Angeles` (PDT) for the timeline regardless of your local system time, matching the official festival schedule.
