@@ -38,7 +38,7 @@ except Exception: pass
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QScrollArea, QFrame, QTabWidget
+    QLabel, QScrollArea, QFrame, QStackedWidget, QPushButton, QButtonGroup
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QRect, QPoint
 from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen, QBrush
@@ -49,6 +49,52 @@ START_HOUR = 16 # 4 PM
 END_HOUR = 25   # 1 AM next day
 COLUMN_WIDTH = 180
 TIME_COLUMN_WIDTH = 80
+
+class QualityButton(QPushButton):
+    def __init__(self, label, height_val, parent=None):
+        super().__init__(label, parent)
+        self.height_val = height_val
+        self.setCheckable(True)
+        self.setFixedSize(55, 26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("""
+            QPushButton {
+                background: #222;
+                color: #888;
+                border: 1px solid #444;
+                border-radius: 4px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #333; color: #CCC; }
+            QPushButton:checked {
+                background: #555;
+                color: white;
+                border: 1px solid white;
+            }
+        """)
+
+class DayButton(QPushButton):
+    def __init__(self, label, parent=None):
+        super().__init__(label, parent)
+        self.setCheckable(True)
+        self.setFixedSize(90, 40)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("""
+            QPushButton {
+                background: #333;
+                color: #AAA;
+                border: none;
+                border-radius: 0;
+                font-size: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #444; color: #DDD; }
+            QPushButton:checked {
+                background: #555;
+                color: white;
+            }
+        """)
 
 class StageHeader(QWidget):
     def __init__(self, stages, parent=None):
@@ -218,8 +264,19 @@ class CoachellaApp(QMainWindow):
             self.schedule_data = {}
 
         self.player = mpv.MPV(vo='gpu', ytdl=True, input_default_bindings=True, input_vo_keyboard=True, log_handler=print)
-        # Add some stability options for YouTube Live
-        self.player['ytdl-raw-options'] = 'ignore-config=,user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"'
+        # Use the bundled yt-dlp build so mpv and the sync scripts resolve YouTube the same way.
+        ytdl_name = "yt-dlp_sabr.exe" if sys.platform.startswith("win") else "yt-dlp_sabr"
+        self.player['script-opts'] = 'ytdl_hook-ytdl_path=' + os.path.abspath(ytdl_name)
+
+        # Use exact string from working manual test: player-client=default,tv (with dash)
+        # Also MUST set user-agent for both ytdl and mpv to prevent access errors
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        self.player['user-agent'] = ua
+        self.player['ytdl-raw-options'] = f'ignore-config=,extractor-args="youtube:player-client=default,tv",user-agent="{ua}"'
+        self.current_quality_height = None
+        self.current_ytdl_format = self.build_ytdl_format(self.current_quality_height)
+        self.player['ytdl-format'] = self.current_ytdl_format
+
         self.player.register_key_binding('r', self.toggle_recording)
         self.player.register_key_binding('R', self.toggle_recording)
 
@@ -232,17 +289,25 @@ class CoachellaApp(QMainWindow):
         self.header = StageHeader(self.stages)
         main_layout.addWidget(self.header)
         
-        self.tabs = QTabWidget()
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane { border: none; background: #121212; }
-            QTabWidget::tab-bar { left: 80px; }
-            QTabBar::tab { background: #333; color: #AAA; padding: 10px 20px; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; }
-            QTabBar::tab:selected { background: #555; color: white; }
-        """)
+        self.control_bar = QWidget()
+        self.control_bar.setFixedSize(self.header.width(), 40)
+        control_layout = QHBoxLayout(self.control_bar)
+        control_layout.setContentsMargins(0, 0, 0, 0)
+        control_layout.setSpacing(0)
+        control_layout.addSpacing(TIME_COLUMN_WIDTH)
 
+        self.day_group = QButtonGroup(self)
+        self.day_group.setExclusive(True)
+        self.day_buttons = []
 
-        
+        self.quality_group = QButtonGroup(self)
+        self.quality_group.setExclusive(True)
+        qualities = [("Auto", None), ("4K", 2160), ("1440p", 1440), ("1080p", 1080), ("720p", 720)]
+
+        self.stack = QStackedWidget()
+        self.stack.setStyleSheet("background: #121212; border: none;")
         self.grids = []
+        self.scroll_areas = []
         days_order = ["Friday", "Saturday", "Sunday"]
         
         # Determine current day to auto-select tab
@@ -253,10 +318,17 @@ class CoachellaApp(QMainWindow):
             now_pdt = datetime.now(timezone(timedelta(hours=-7)))
         current_day_name = now_pdt.strftime('%A')
         
-        default_tab_index = 0
+        default_page_index = 0
         
-        for i, day in enumerate(days_order):
+        for day in days_order:
             if day in self.schedule_data:
+                page_index = self.stack.count()
+                day_btn = DayButton(day)
+                day_btn.clicked.connect(lambda checked=False, idx=page_index: self.set_day(idx))
+                self.day_group.addButton(day_btn, page_index)
+                self.day_buttons.append(day_btn)
+                control_layout.addWidget(day_btn)
+
                 scroll = QScrollArea()
                 grid = ScheduleGrid(day, self.schedule_data[day], self.stages, self)
                 grid.columnClicked.connect(self.load_stream)
@@ -264,14 +336,28 @@ class CoachellaApp(QMainWindow):
                 scroll.setWidgetResizable(True)
                 scroll.setStyleSheet("border: none;")
                 scroll.horizontalScrollBar().valueChanged.connect(self.sync_header)
-                self.tabs.addTab(scroll, day)
+                self.stack.addWidget(scroll)
                 self.grids.append(grid)
+                self.scroll_areas.append(scroll)
                 
                 if day.lower() == current_day_name.lower():
-                    default_tab_index = self.tabs.count() - 1
+                    default_page_index = page_index
 
-        main_layout.addWidget(self.tabs)
-        self.tabs.setCurrentIndex(default_tab_index)
+        control_layout.addStretch(1)
+        for i, (label, h) in enumerate(qualities):
+            btn = QualityButton(label, h)
+            self.quality_group.addButton(btn)
+            if h is None:
+                btn.setChecked(True)
+            btn.clicked.connect(self.on_quality_clicked)
+            if i:
+                control_layout.addSpacing(5)
+            control_layout.addWidget(btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        main_layout.addWidget(self.control_bar)
+        main_layout.addWidget(self.stack)
+        if self.day_buttons:
+            self.set_day(default_page_index)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_all_grids)
@@ -281,6 +367,33 @@ class CoachellaApp(QMainWindow):
         self.blink_timer.timeout.connect(self.toggle_blink)
         self.blink_timer.start(500)
 
+        self.load_stream(self.current_stage_index)
+
+    def on_quality_clicked(self):
+        btn = self.sender()
+        if btn:
+            self.change_quality(btn.height_val)
+
+    def set_day(self, index):
+        if not (0 <= index < self.stack.count()):
+            return
+        self.stack.setCurrentIndex(index)
+        self.day_buttons[index].setChecked(True)
+        self.sync_header(self.scroll_areas[index].horizontalScrollBar().value())
+
+    def build_ytdl_format(self, height):
+        # Prefer single-file HLS streams; mpv cannot play YouTube SABR video/audio EDL URLs directly.
+        if height:
+            return f"best[protocol^=m3u8][height<={height}]/best[protocol^=m3u8]/best[height<={height}]/best"
+        return "best[protocol^=m3u8]/best"
+
+    def change_quality(self, height):
+        fmt = self.build_ytdl_format(height)
+        self.current_quality_height = height
+        self.current_ytdl_format = fmt
+        print(f"Changing quality to: {height if height else 'Auto'} (ytdl-format: {fmt})")
+        self.player['ytdl-format'] = fmt
+        # Reload current stream to apply quality
         self.load_stream(self.current_stage_index)
 
     def update_all_grids(self):
@@ -308,6 +421,7 @@ class CoachellaApp(QMainWindow):
 
     def sync_header(self, value):
         self.header.move(-value, 0)
+        self.control_bar.move(-value, self.control_bar.y())
 
     def load_stream(self, index):
         if not (0 <= index < len(self.stages)):
@@ -319,7 +433,7 @@ class CoachellaApp(QMainWindow):
             grid.setSelected(index)
         self.header.setSelected(index)
         data = self.stages[index]
-        self.player.play(data["url"])
+        self.player.loadfile(data["url"], "replace", ytdl_format=self.current_ytdl_format)
         self.player.title = f"{data['name']} - Coachella 2026"
 
     def closeEvent(self, event):

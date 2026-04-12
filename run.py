@@ -1,11 +1,13 @@
 import subprocess
 import sys
 import os
+import requests
+import stat
 
 def run_command(command, description):
     print(f"\n>>> {description}...")
     try:
-        # Use the same python interpreter as the current script
+        # Use sys.executable to ensure we use the venv's python
         cmd = [sys.executable] + command
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
@@ -13,9 +15,46 @@ def run_command(command, description):
         return False
     return True
 
+def download_sabr_executable():
+    print("\n>>> Downloading specialized yt-dlp executable (SABR) for 4K support...")
+    
+    # Map platforms to SABR release assets
+    if sys.platform.startswith("win"):
+        asset = "yt-dlp.exe"
+        target = "yt-dlp_sabr.exe"
+    elif sys.platform.startswith("darwin"):
+        asset = "yt-dlp_macos"
+        target = "yt-dlp_sabr"
+    else:
+        asset = "yt-dlp_linux"
+        target = "yt-dlp_sabr"
+
+    url = f"https://github.com/bashonly/yt-dlp/releases/download/sabr/{asset}"
+    
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        with open(target, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        # Make executable (not needed on Windows but safe to call)
+        if not sys.platform.startswith("win"):
+            st = os.stat(target)
+            os.chmod(target, st.st_mode | stat.S_IEXEC)
+            
+        print(f"  Successfully downloaded and prepared {target}")
+        return True
+    except Exception as e:
+        print(f"  Error downloading SABR executable: {e}")
+        return False
+
 def main():
-    # 0. Update yt-dlp (frequently needed for live streams)
-    run_command(["-m", "pip", "install", "-U", "yt-dlp"], "Updating yt-dlp to latest version")
+    # 0. Ensure SABR executable is present
+    target = "yt-dlp_sabr.exe" if sys.platform.startswith("win") else "yt-dlp_sabr"
+    if not os.path.exists(target):
+        if not download_sabr_executable():
+            sys.exit(1)
 
     # 1. Download descriptions
     if not run_command(["download_descriptions.py"], "Downloading YouTube descriptions"):
@@ -27,8 +66,6 @@ def main():
 
     # 3. Run the main app
     print("\n>>> Launching Coachella Desktop App...")
-    # Using Popen for the main app so we don't necessarily block if we wanted to do more, 
-    # but run is fine here.
     try:
         subprocess.run([sys.executable, "main.py"])
     except KeyboardInterrupt:
