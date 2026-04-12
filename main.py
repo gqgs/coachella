@@ -50,6 +50,8 @@ START_HOUR = 16 # 4 PM
 END_HOUR = 25   # 1 AM next day
 COLUMN_WIDTH = 180
 TIME_COLUMN_WIDTH = 80
+MAX_SABR_RECONNECT_ATTEMPTS = 10
+SABR_RECONNECT_BASE_DELAY_MS = 1500
 
 class QualityButton(QPushButton):
     def __init__(self, label, height_val, parent=None):
@@ -244,6 +246,8 @@ class ScheduleGrid(QWidget):
                 painter.drawText(QRect(2, int(line_y) - 12, TIME_COLUMN_WIDTH - 4, 24), Qt.AlignmentFlag.AlignCenter, label_text)
 
 class CoachellaApp(QMainWindow):
+    sabrPlaybackEnded = Signal()
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Coachella 2026")
@@ -253,6 +257,7 @@ class CoachellaApp(QMainWindow):
         self.is_recording = False
         self.blink_on = True
         self.current_stage_index = 2 # Sahara default
+        self.sabr_reconnect_attempts = 0
 
         with open("config.json", "r") as f:
             config = json.load(f)
@@ -279,6 +284,17 @@ class CoachellaApp(QMainWindow):
         self.current_quality_height = None
         self.current_ytdl_format = self.build_ytdl_format(self.current_quality_height)
         self.player['ytdl-format'] = self.current_ytdl_format
+        self.sabr_reconnect_timer = QTimer(self)
+        self.sabr_reconnect_timer.setSingleShot(True)
+        self.sabr_reconnect_timer.timeout.connect(self.retry_sabr_stream)
+        self.sabrPlaybackEnded.connect(self.handle_sabr_playback_ended)
+
+        @self.player.event_callback('end-file')
+        def on_end_file(event):
+            data = event.data
+            if data and data.reason in (mpv.MpvEventEndFile.EOF, mpv.MpvEventEndFile.ERROR):
+                self.sabrPlaybackEnded.emit()
+        self._sabr_end_file_callback = on_end_file
 
         self.player.register_key_binding('r', self.toggle_recording)
         self.player.register_key_binding('R', self.toggle_recording)
@@ -305,6 +321,7 @@ class CoachellaApp(QMainWindow):
 
         self.quality_group = QButtonGroup(self)
         self.quality_group.setExclusive(True)
+        self.quality_buttons_by_height = {}
         qualities = [("Auto", None), ("4K", 2160), ("1440p", 1440), ("1080p", 1080), ("720p", 720)]
 
         self.stack = QStackedWidget()
@@ -352,6 +369,7 @@ class CoachellaApp(QMainWindow):
             self.quality_group.addButton(btn)
             if h is None:
                 btn.setChecked(True)
+            self.quality_buttons_by_height[h] = btn
             btn.clicked.connect(self.on_quality_clicked)
             if i:
                 control_layout.addSpacing(5)
@@ -396,10 +414,45 @@ class CoachellaApp(QMainWindow):
         fmt = self.build_ytdl_format(height)
         self.current_quality_height = height
         self.current_ytdl_format = fmt
+        self.sabr_reconnect_attempts = 0
+        self.sabr_reconnect_timer.stop()
         print(f"Changing quality to: {height if height else 'Auto'} (ytdl-format: {fmt})")
         self.player['ytdl-format'] = fmt
         # Reload current stream to apply quality
         self.load_stream(self.current_stage_index)
+
+    def handle_sabr_playback_ended(self):
+        if not is_sabr_height(self.current_quality_height) or self.sabr_reconnect_timer.isActive():
+            return
+        if self.sabr_reconnect_attempts >= MAX_SABR_RECONNECT_ATTEMPTS:
+            self.fallback_to_1080_hls("SABR playback ended repeatedly")
+            return
+
+        self.sabr_reconnect_attempts += 1
+        delay_ms = min(SABR_RECONNECT_BASE_DELAY_MS * self.sabr_reconnect_attempts, 8000)
+        print(f"SABR playback ended; reconnecting in {delay_ms / 1000:.1f}s")
+        self.sabr_reconnect_timer.start(delay_ms)
+
+    def retry_sabr_stream(self):
+        if is_sabr_height(self.current_quality_height):
+            self.load_stream(self.current_stage_index, reconnecting=True)
+
+    def fallback_to_1080_hls(self, reason):
+        print(f"{reason}; falling back to 1080p HLS")
+        self.sabr_reconnect_timer.stop()
+        self.sabr_reconnect_attempts = 0
+        self.sabr_bridge.stop_all()
+        self.current_quality_height = 1080
+        self.current_ytdl_format = self.build_ytdl_format(1080)
+        self.player['ytdl-format'] = self.current_ytdl_format
+        fallback_button = self.quality_buttons_by_height.get(1080)
+        if fallback_button:
+            fallback_button.setChecked(True)
+        self.player.loadfile(
+            self.stages[self.current_stage_index]["url"],
+            "replace",
+            ytdl_format=self.current_ytdl_format,
+        )
 
     def update_all_grids(self):
         for grid in self.grids:
@@ -428,9 +481,12 @@ class CoachellaApp(QMainWindow):
         self.header.move(-value, 0)
         self.control_bar.move(-value, self.control_bar.y())
 
-    def load_stream(self, index):
+    def load_stream(self, index, reconnecting=False):
         if not (0 <= index < len(self.stages)):
             return
+        if not reconnecting:
+            self.sabr_reconnect_attempts = 0
+        self.sabr_reconnect_timer.stop()
         if self.is_recording:
             self.toggle_recording()
         self.current_stage_index = index
@@ -444,9 +500,7 @@ class CoachellaApp(QMainWindow):
                 print(f"Starting SABR bridge for {data['name']} at {self.current_quality_height}p: {bridge_url}")
                 self.player.loadfile(bridge_url, "replace")
             except Exception as exc:
-                print(f"SABR bridge failed, falling back to 1080p HLS: {exc}")
-                self.sabr_bridge.stop_all()
-                self.player.loadfile(data["url"], "replace", ytdl_format=self.build_ytdl_format(1080))
+                self.fallback_to_1080_hls(f"SABR bridge failed: {exc}")
         else:
             self.sabr_bridge.stop_all()
             self.player.loadfile(data["url"], "replace", ytdl_format=self.current_ytdl_format)

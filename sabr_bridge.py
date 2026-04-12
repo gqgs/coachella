@@ -10,6 +10,17 @@ from pathlib import Path
 
 
 HIGH_QUALITY_MIN_HEIGHT = 1440
+DOWNLOADER_RESTART_DELAY_SECONDS = 2
+MAX_FRAGMENT_GAP_SECONDS = 25
+AUDIO_FORMAT_MARKERS = (
+    ".f140.",
+    ".f141.",
+    ".f249.",
+    ".f250.",
+    ".f251.",
+    ".f233.",
+    ".f234.",
+)
 
 
 def is_sabr_height(height):
@@ -135,12 +146,30 @@ class SabrSession:
         self.ffmpeg = None
         self.log_threads = []
         self.writer_threads = []
+        self.monitor_thread = None
         self.stream_lock = threading.Lock()
+        self.process_lock = threading.Lock()
+        self.last_downloader_error = None
+        self.downloader_restart_count = 0
+        self.last_fifo_write = time.monotonic()
 
     def start_downloader(self):
+        self._start_downloader_process()
+        self.monitor_thread = threading.Thread(target=self._monitor_downloader, daemon=True)
+        self.monitor_thread.start()
+
+    def _start_downloader_process(self):
         command = [
             self.ytdlp_path,
             "--ignore-config",
+            "--no-live-from-start",
+            "--continue",
+            "--retries", "infinite",
+            "--fragment-retries", "infinite",
+            "--file-access-retries", "infinite",
+            "--retry-sleep", "http:linear=1:5:1",
+            "--retry-sleep", "fragment:linear=1:5:1",
+            "--socket-timeout", "30",
             "--keep-fragments",
             "--part",
             "--newline",
@@ -152,14 +181,17 @@ class SabrSession:
             "-o", "stream.%(format_id)s.%(ext)s",
             self.source_url,
         ]
-        self.downloader = subprocess.Popen(
+        process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
         )
-        self.log_threads.append(self._drain_text_output(self.downloader.stdout, "yt-dlp_sabr"))
+        with self.process_lock:
+            self.downloader = process
+            self.last_downloader_error = None
+        self.log_threads.append(self._drain_text_output(process.stdout, "yt-dlp_sabr"))
 
     def stream_to(self, output):
         if not self.stream_lock.acquire(blocking=False):
@@ -171,6 +203,7 @@ class SabrSession:
             audio_fifo = self.tempdir / "audio.pipe"
             os.mkfifo(video_fifo)
             os.mkfifo(audio_fifo)
+            self.last_fifo_write = time.monotonic()
 
             self.writer_threads = [
                 threading.Thread(target=self._tail_file_to_fifo, args=(video_part, video_fifo), daemon=True),
@@ -178,6 +211,8 @@ class SabrSession:
             ]
             for thread in self.writer_threads:
                 thread.start()
+            self.writer_threads.append(threading.Thread(target=self._watch_fragment_activity, daemon=True))
+            self.writer_threads[-1].start()
 
             self.ffmpeg = subprocess.Popen(
                 [
@@ -218,6 +253,8 @@ class SabrSession:
         self._stop_process(self.downloader)
         for thread in self.writer_threads:
             thread.join(timeout=1)
+        if self.monitor_thread:
+            self.monitor_thread.join(timeout=1)
         for thread in self.log_threads:
             thread.join(timeout=1)
         shutil.rmtree(self.tempdir, ignore_errors=True)
@@ -227,21 +264,80 @@ class SabrSession:
         last_error = None
         while time.monotonic() < deadline and not self.stop_event.is_set():
             parts = sorted(self.tempdir.glob("*.sq*.part"))
-            audio_parts = [part for part in parts if ".f140." in part.name and part.stat().st_size > 16 * 1024]
-            video_parts = [part for part in parts if ".f140." not in part.name and part.stat().st_size > 256 * 1024]
+            audio_parts = [part for part in parts if self._is_audio_part(part) and part.stat().st_size > 16 * 1024]
+            video_parts = [part for part in parts if not self._is_audio_part(part) and part.stat().st_size > 256 * 1024]
             if audio_parts and video_parts:
                 return video_parts[0], audio_parts[0]
-            if self.downloader and self.downloader.poll() is not None:
-                last_error = f"yt-dlp_sabr exited with code {self.downloader.returncode}"
-                break
+            with self.process_lock:
+                last_error = self.last_downloader_error
             time.sleep(0.2)
         raise SabrBridgeError(last_error or "timed out waiting for SABR fragments")
+
+    def _is_audio_part(self, part):
+        return any(marker in part.name for marker in AUDIO_FORMAT_MARKERS)
 
     def check_streaming_prerequisites(self):
         if not hasattr(os, "mkfifo"):
             raise SabrBridgeError("SABR bridge requires POSIX FIFO support")
         if shutil.which(self.ffmpeg_path) is None and not Path(self.ffmpeg_path).exists():
             raise SabrBridgeError("ffmpeg is required to mux SABR video and audio")
+
+    def _monitor_downloader(self):
+        while not self.stop_event.is_set():
+            with self.process_lock:
+                process = self.downloader
+            if process is None:
+                break
+
+            while not self.stop_event.is_set() and process.poll() is None:
+                time.sleep(0.5)
+            if self.stop_event.is_set():
+                break
+
+            returncode = process.poll()
+            self.downloader_restart_count += 1
+            with self.process_lock:
+                if self.downloader is process:
+                    self.downloader = None
+                self.last_downloader_error = f"yt-dlp_sabr exited with code {returncode}"
+
+            print(
+                "SABR downloader stopped "
+                f"(code {returncode}); restarting in {DOWNLOADER_RESTART_DELAY_SECONDS}s "
+                f"(restart #{self.downloader_restart_count})"
+            )
+            if not self._sleep_until_restart():
+                break
+            try:
+                self._start_downloader_process()
+            except Exception as exc:
+                with self.process_lock:
+                    self.last_downloader_error = f"failed to restart yt-dlp_sabr: {exc}"
+                print(f"SABR downloader restart failed: {exc}")
+                if not self._sleep_until_restart():
+                    break
+
+    def _sleep_until_restart(self):
+        deadline = time.monotonic() + DOWNLOADER_RESTART_DELAY_SECONDS
+        while time.monotonic() < deadline:
+            if self.stop_event.is_set():
+                return False
+            time.sleep(0.1)
+        return True
+
+    def _watch_fragment_activity(self):
+        while not self.stop_event.is_set():
+            idle_for = time.monotonic() - self.last_fifo_write
+            if idle_for > MAX_FRAGMENT_GAP_SECONDS:
+                print(
+                    "SABR bridge received no fragment data for "
+                    f"{idle_for:.1f}s; closing stream so mpv can reconnect"
+                )
+                self.stop_event.set()
+                self._stop_ffmpeg()
+                self._stop_process(self.downloader)
+                return
+            time.sleep(1)
 
     def _tail_file_to_fifo(self, source_path, fifo_path):
         try:
@@ -250,9 +346,8 @@ class SabrSession:
                     chunk = source.read(64 * 1024)
                     if chunk:
                         fifo.write(chunk)
+                        self.last_fifo_write = time.monotonic()
                     else:
-                        if self.downloader and self.downloader.poll() is not None:
-                            break
                         time.sleep(0.05)
         except (BrokenPipeError, FileNotFoundError, OSError):
             pass
