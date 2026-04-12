@@ -235,18 +235,21 @@ class ScheduleGrid(QWidget):
                 if is_recording and blink_on:
                     label_text = "🔴 RECORDING"
                     bg_color = QColor(200, 0, 0)
+                    font_size = 6
                 else:
                     label_text = f"LIVE {now_pdt.strftime('%-I:%M %p')}"
                     bg_color = QColor(255, 0, 0)
+                    font_size = 8
                 painter.setBrush(bg_color)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawRoundedRect(2, int(line_y) - 12, TIME_COLUMN_WIDTH - 4, 24, 5, 5)
                 painter.setPen(Qt.GlobalColor.white)
-                painter.setFont(QFont("Arial", 8, QFont.Weight.Bold))
+                painter.setFont(QFont("Arial", font_size, QFont.Weight.Bold))
                 painter.drawText(QRect(2, int(line_y) - 12, TIME_COLUMN_WIDTH - 4, 24), Qt.AlignmentFlag.AlignCenter, label_text)
 
 class CoachellaApp(QMainWindow):
     sabrPlaybackEnded = Signal()
+    recordingToggleRequested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -288,6 +291,7 @@ class CoachellaApp(QMainWindow):
         self.sabr_reconnect_timer.setSingleShot(True)
         self.sabr_reconnect_timer.timeout.connect(self.retry_sabr_stream)
         self.sabrPlaybackEnded.connect(self.handle_sabr_playback_ended)
+        self.recordingToggleRequested.connect(self.toggle_recording)
 
         @self.player.event_callback('end-file')
         def on_end_file(event):
@@ -296,8 +300,8 @@ class CoachellaApp(QMainWindow):
                 self.sabrPlaybackEnded.emit()
         self._sabr_end_file_callback = on_end_file
 
-        self.player.register_key_binding('r', self.toggle_recording)
-        self.player.register_key_binding('R', self.toggle_recording)
+        self.player.register_key_binding('r', self.handle_record_key)
+        self.player.register_key_binding('R', self.handle_record_key)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -463,11 +467,22 @@ class CoachellaApp(QMainWindow):
             self.blink_on = not self.blink_on
             self.update_all_grids()
 
+    def handle_record_key(self, key_state="p-", *_):
+        if key_state and key_state[0] not in ("d", "p"):
+            return
+        self.recordingToggleRequested.emit()
+
+    def current_recording_extension(self):
+        if is_sabr_height(self.current_quality_height):
+            return "mkv"
+        return "ts"
+
     def toggle_recording(self):
         if not self.is_recording:
             stage_name = self.stages[self.current_stage_index]["name"].replace(" ", "_")
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"coachella_{stage_name}_{timestamp}.ts"
+            extension = self.current_recording_extension()
+            filename = f"coachella_{stage_name}_{timestamp}.{extension}"
             self.player['stream-record'] = filename
             self.is_recording = True
             print(f"Started recording to {filename}")
@@ -487,7 +502,7 @@ class CoachellaApp(QMainWindow):
         if not reconnecting:
             self.sabr_reconnect_attempts = 0
         self.sabr_reconnect_timer.stop()
-        if self.is_recording:
+        if self.is_recording and not reconnecting:
             self.toggle_recording()
         self.current_stage_index = index
         for grid in self.grids:

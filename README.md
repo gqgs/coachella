@@ -9,7 +9,7 @@ A high-performance desktop application for watching Coachella livestreams with a
 - **Live Time Tracking**: A precise red timeline that indicates exactly who is playing right now in Pacific Daylight Time (PDT).
 - **Column-Based Navigation**: Click anywhere on a stage's column to instantly switch the video player to that stream.
 - **Automated Sync**: One-command synchronization that fetches the latest artist schedule directly from official YouTube descriptions.
-- **Stream Recording**: Press the `R` key while the video window is focused to start or stop recording the current stream to a local `.ts` file. A blinking "🔴 RECORDING" indicator will appear on the schedule timeline.
+- **Stream Recording**: Press the `R` key while the video window is focused to start or stop recording the current stream to a local file. HLS playback records to `.ts`; 1440p and 4K SABR playback records to `.mkv`. A blinking "🔴 RECORDING" indicator will appear on the schedule timeline.
 - **Native Performance**: Uses `mpv` as the video backend for low-latency, high-quality streaming.
 
 ## Prerequisites
