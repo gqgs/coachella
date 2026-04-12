@@ -19,6 +19,10 @@ A high-performance desktop application for watching Coachella livestreams with a
   - **Arch Linux**: `sudo pacman -S mpv`
   - **Ubuntu/Debian**: `sudo apt install mpv libmpv-dev`
   - **macOS**: `brew install mpv`
+- **FFmpeg**: Required for 1440p and 4K YouTube SABR livestream playback. The app uses the bundled `yt-dlp_sabr` downloader to fetch SABR fragments, then uses `ffmpeg` to mux the separate live video and audio fragments into a stream that `mpv` can play.
+  - **Arch Linux**: `sudo pacman -S ffmpeg`
+  - **Ubuntu/Debian**: `sudo apt install ffmpeg`
+  - **macOS**: `brew install ffmpeg`
 
 ## Installation
 
@@ -37,6 +41,7 @@ To automatically download the latest descriptions, sync the schedule, and launch
 python run.py
 ```
 
+- **Quality Selection**: `Auto`, `1080p`, and `720p` use the standard HLS playback path. `1440p` and `4K` use the bundled SABR-enabled `yt-dlp` fork plus FFmpeg.
 - **Switch Stages**: Click on any column in the schedule grid.
 - **Switch Days**: Click the tabs at the top (aligned with the stage columns).
 - **Fullscreen**: Toggle fullscreen in the video player using the `F` key or double-click.
