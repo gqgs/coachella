@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer, QRect, QPoint
 from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen, QBrush
 import mpv
+from sabr_bridge import SabrBridge, is_sabr_height, build_sabr_format
 
 PIXELS_PER_HOUR = 150
 START_HOUR = 16 # 4 PM
@@ -266,7 +267,9 @@ class CoachellaApp(QMainWindow):
         self.player = mpv.MPV(vo='gpu', ytdl=True, input_default_bindings=True, input_vo_keyboard=True, log_handler=print)
         # Use the bundled yt-dlp build so mpv and the sync scripts resolve YouTube the same way.
         ytdl_name = "yt-dlp_sabr.exe" if sys.platform.startswith("win") else "yt-dlp_sabr"
-        self.player['script-opts'] = 'ytdl_hook-ytdl_path=' + os.path.abspath(ytdl_name)
+        self.ytdl_path = os.path.abspath(ytdl_name)
+        self.player['script-opts'] = 'ytdl_hook-ytdl_path=' + self.ytdl_path
+        self.sabr_bridge = SabrBridge(self.ytdl_path)
 
         # Use exact string from working manual test: player-client=default,tv (with dash)
         # Also MUST set user-agent for both ytdl and mpv to prevent access errors
@@ -382,7 +385,9 @@ class CoachellaApp(QMainWindow):
         self.sync_header(self.scroll_areas[index].horizontalScrollBar().value())
 
     def build_ytdl_format(self, height):
-        # Prefer single-file HLS streams; mpv cannot play YouTube SABR video/audio EDL URLs directly.
+        if is_sabr_height(height):
+            return build_sabr_format(height)
+        # mpv can play YouTube HLS directly, but not raw SABR URLs from ytdl_hook.
         if height:
             return f"best[protocol^=m3u8][height<={height}]/best[protocol^=m3u8]/best[height<={height}]/best"
         return "best[protocol^=m3u8]/best"
@@ -433,10 +438,22 @@ class CoachellaApp(QMainWindow):
             grid.setSelected(index)
         self.header.setSelected(index)
         data = self.stages[index]
-        self.player.loadfile(data["url"], "replace", ytdl_format=self.current_ytdl_format)
+        if is_sabr_height(self.current_quality_height):
+            try:
+                bridge_url = self.sabr_bridge.start(data["url"], self.current_quality_height)
+                print(f"Starting SABR bridge for {data['name']} at {self.current_quality_height}p: {bridge_url}")
+                self.player.loadfile(bridge_url, "replace")
+            except Exception as exc:
+                print(f"SABR bridge failed, falling back to 1080p HLS: {exc}")
+                self.sabr_bridge.stop_all()
+                self.player.loadfile(data["url"], "replace", ytdl_format=self.build_ytdl_format(1080))
+        else:
+            self.sabr_bridge.stop_all()
+            self.player.loadfile(data["url"], "replace", ytdl_format=self.current_ytdl_format)
         self.player.title = f"{data['name']} - Coachella 2026"
 
     def closeEvent(self, event):
+        self.sabr_bridge.close()
         self.player.terminate()
         event.accept()
 
