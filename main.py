@@ -52,6 +52,13 @@ COLUMN_WIDTH = 180
 TIME_COLUMN_WIDTH = 80
 MAX_SABR_RECONNECT_ATTEMPTS = 10
 SABR_RECONNECT_BASE_DELAY_MS = 1500
+MAX_HLS_RECONNECT_ATTEMPTS = 5
+HLS_RECONNECT_BASE_DELAY_MS = 1000
+HLS_DEMUXER_LAVF_OPTIONS = "http_persistent=0,http_multiple=0,seg_max_retry=5"
+HLS_STREAM_LAVF_OPTIONS = (
+    "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,"
+    "reconnect_delay_max=5,reconnect_max_retries=10,rw_timeout=15000000"
+)
 
 class QualityButton(QPushButton):
     def __init__(self, label, height_val, parent=None):
@@ -239,7 +246,7 @@ class ScheduleGrid(QWidget):
                 else:
                     label_text = f"LIVE {now_pdt.strftime('%-I:%M %p')}"
                     bg_color = QColor(255, 0, 0)
-                    font_size = 8
+                    font_size = 6
                 painter.setBrush(bg_color)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.drawRoundedRect(2, int(line_y) - 12, TIME_COLUMN_WIDTH - 4, 24, 5, 5)
@@ -248,7 +255,7 @@ class ScheduleGrid(QWidget):
                 painter.drawText(QRect(2, int(line_y) - 12, TIME_COLUMN_WIDTH - 4, 24), Qt.AlignmentFlag.AlignCenter, label_text)
 
 class CoachellaApp(QMainWindow):
-    sabrPlaybackEnded = Signal()
+    playbackEnded = Signal()
     recordingToggleRequested = Signal()
 
     def __init__(self):
@@ -261,6 +268,8 @@ class CoachellaApp(QMainWindow):
         self.blink_on = True
         self.current_stage_index = 2 # Sahara default
         self.sabr_reconnect_attempts = 0
+        self.hls_reconnect_attempts = 0
+        self.is_closing = False
 
         with open("config.json", "r") as f:
             config = json.load(f)
@@ -290,14 +299,17 @@ class CoachellaApp(QMainWindow):
         self.sabr_reconnect_timer = QTimer(self)
         self.sabr_reconnect_timer.setSingleShot(True)
         self.sabr_reconnect_timer.timeout.connect(self.retry_sabr_stream)
-        self.sabrPlaybackEnded.connect(self.handle_sabr_playback_ended)
+        self.hls_reconnect_timer = QTimer(self)
+        self.hls_reconnect_timer.setSingleShot(True)
+        self.hls_reconnect_timer.timeout.connect(self.retry_hls_stream)
+        self.playbackEnded.connect(self.handle_playback_ended)
         self.recordingToggleRequested.connect(self.toggle_recording)
 
         @self.player.event_callback('end-file')
         def on_end_file(event):
             data = event.data
             if data and data.reason in (mpv.MpvEventEndFile.EOF, mpv.MpvEventEndFile.ERROR):
-                self.sabrPlaybackEnded.emit()
+                self.playbackEnded.emit()
         self._sabr_end_file_callback = on_end_file
 
         self.player.register_key_binding('r', self.handle_record_key)
@@ -419,11 +431,21 @@ class CoachellaApp(QMainWindow):
         self.current_quality_height = height
         self.current_ytdl_format = fmt
         self.sabr_reconnect_attempts = 0
+        self.hls_reconnect_attempts = 0
         self.sabr_reconnect_timer.stop()
+        self.hls_reconnect_timer.stop()
         print(f"Changing quality to: {height if height else 'Auto'} (ytdl-format: {fmt})")
         self.player['ytdl-format'] = fmt
         # Reload current stream to apply quality
         self.load_stream(self.current_stage_index)
+
+    def handle_playback_ended(self):
+        if self.is_closing:
+            return
+        if is_sabr_height(self.current_quality_height):
+            self.handle_sabr_playback_ended()
+        else:
+            self.handle_hls_playback_ended()
 
     def handle_sabr_playback_ended(self):
         if not is_sabr_height(self.current_quality_height) or self.sabr_reconnect_timer.isActive():
@@ -441,14 +463,41 @@ class CoachellaApp(QMainWindow):
         if is_sabr_height(self.current_quality_height):
             self.load_stream(self.current_stage_index, reconnecting=True)
 
+    def handle_hls_playback_ended(self):
+        if self.hls_reconnect_timer.isActive():
+            return
+        if self.hls_reconnect_attempts >= MAX_HLS_RECONNECT_ATTEMPTS:
+            print("HLS playback ended repeatedly; leaving stream stopped")
+            return
+
+        self.hls_reconnect_attempts += 1
+        delay_ms = min(HLS_RECONNECT_BASE_DELAY_MS * self.hls_reconnect_attempts, 5000)
+        print(f"HLS playback ended; reconnecting in {delay_ms / 1000:.1f}s")
+        self.hls_reconnect_timer.start(delay_ms)
+
+    def retry_hls_stream(self):
+        if not is_sabr_height(self.current_quality_height):
+            self.load_stream(self.current_stage_index, reconnecting=True)
+
+    def use_hls_network_options(self):
+        self.player['demuxer-lavf-o'] = HLS_DEMUXER_LAVF_OPTIONS
+        self.player['stream-lavf-o'] = HLS_STREAM_LAVF_OPTIONS
+
+    def clear_hls_network_options(self):
+        self.player['demuxer-lavf-o'] = ""
+        self.player['stream-lavf-o'] = ""
+
     def fallback_to_1080_hls(self, reason):
         print(f"{reason}; falling back to 1080p HLS")
         self.sabr_reconnect_timer.stop()
+        self.hls_reconnect_timer.stop()
         self.sabr_reconnect_attempts = 0
+        self.hls_reconnect_attempts = 0
         self.sabr_bridge.stop_all()
         self.current_quality_height = 1080
         self.current_ytdl_format = self.build_ytdl_format(1080)
         self.player['ytdl-format'] = self.current_ytdl_format
+        self.use_hls_network_options()
         fallback_button = self.quality_buttons_by_height.get(1080)
         if fallback_button:
             fallback_button.setChecked(True)
@@ -501,7 +550,9 @@ class CoachellaApp(QMainWindow):
             return
         if not reconnecting:
             self.sabr_reconnect_attempts = 0
+            self.hls_reconnect_attempts = 0
         self.sabr_reconnect_timer.stop()
+        self.hls_reconnect_timer.stop()
         if self.is_recording and not reconnecting:
             self.toggle_recording()
         self.current_stage_index = index
@@ -511,6 +562,7 @@ class CoachellaApp(QMainWindow):
         data = self.stages[index]
         if is_sabr_height(self.current_quality_height):
             try:
+                self.clear_hls_network_options()
                 bridge_url = self.sabr_bridge.start(data["url"], self.current_quality_height)
                 print(f"Starting SABR bridge for {data['name']} at {self.current_quality_height}p: {bridge_url}")
                 self.player.loadfile(bridge_url, "replace")
@@ -518,10 +570,14 @@ class CoachellaApp(QMainWindow):
                 self.fallback_to_1080_hls(f"SABR bridge failed: {exc}")
         else:
             self.sabr_bridge.stop_all()
+            self.use_hls_network_options()
             self.player.loadfile(data["url"], "replace", ytdl_format=self.current_ytdl_format)
         self.player.title = f"{data['name']} - Coachella 2026"
 
     def closeEvent(self, event):
+        self.is_closing = True
+        self.sabr_reconnect_timer.stop()
+        self.hls_reconnect_timer.stop()
         self.sabr_bridge.close()
         self.player.terminate()
         event.accept()
