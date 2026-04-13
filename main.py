@@ -3,6 +3,7 @@ import os
 import json
 import locale
 import time
+import re
 from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
@@ -743,19 +744,62 @@ class CoachellaApp(QMainWindow):
             return "mkv"
         return "ts"
 
+    def current_artist_name(self):
+        try:
+            now_pdt = datetime.now(PDT)
+        except Exception:
+            from datetime import timezone, timedelta
+            now_pdt = datetime.now(timezone(timedelta(hours=-7)))
+
+        day_schedule = self.schedule_data.get(now_pdt.strftime("%A"), {})
+        stage_name = self.stages[self.current_stage_index]["name"]
+        current_time = now_pdt.hour + (now_pdt.minute / 60.0)
+        if now_pdt.hour < 4:
+            current_time += 24
+
+        for entry in day_schedule.get(stage_name, []):
+            start = self.schedule_time_to_float(entry["start"])
+            end = self.schedule_time_to_float(entry.get("end", entry["start"]))
+            if start <= current_time < end:
+                return entry["artist"]
+        return "Unknown Artist"
+
+    def schedule_time_to_float(self, time_text):
+        hour, minute = map(int, time_text.split(":"))
+        return hour + (minute / 60.0)
+
+    def safe_filename_part(self, value):
+        value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", value)
+        value = re.sub(r"\s+", " ", value).strip()
+        return value or "Unknown"
+
+    def current_recording_filename(self):
+        stage_name = self.safe_filename_part(self.stages[self.current_stage_index]["name"])
+        artist_name = self.safe_filename_part(self.current_artist_name())
+        now = datetime.now()
+        festival_year = now.year
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+        extension = self.current_recording_extension()
+        return f"Coachella {festival_year} - {stage_name} {artist_name} {timestamp}.{extension}"
+
+    def show_osd_message(self, message, duration_ms=3000):
+        try:
+            self.player.command("show-text", message, duration_ms)
+        except Exception as exc:
+            print(f"Unable to show mpv OSD message: {exc}")
+
     def toggle_recording(self):
         if not self.is_recording:
-            stage_name = self.stages[self.current_stage_index]["name"].replace(" ", "_")
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            extension = self.current_recording_extension()
-            filename = f"coachella_{stage_name}_{timestamp}.{extension}"
+            filename = self.current_recording_filename()
             self.player['stream-record'] = filename
             self.is_recording = True
             print(f"Started recording to {filename}")
+            self.show_osd_message(f"Recording started: {filename}")
         else:
             self.player['stream-record'] = ""
             self.is_recording = False
             print("Stopped recording")
+            self.show_osd_message("Recording stopped")
         self.update_all_grids()
 
     def sync_header(self, value):
