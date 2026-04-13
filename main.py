@@ -2,6 +2,7 @@ import sys
 import os
 import json
 import locale
+import time
 from datetime import datetime
 try:
     from zoneinfo import ZoneInfo
@@ -54,10 +55,47 @@ MAX_SABR_RECONNECT_ATTEMPTS = 10
 SABR_RECONNECT_BASE_DELAY_MS = 1500
 MAX_HLS_RECONNECT_ATTEMPTS = 5
 HLS_RECONNECT_BASE_DELAY_MS = 1000
-HLS_DEMUXER_LAVF_OPTIONS = "http_persistent=0,http_multiple=0,seg_max_retry=5"
+HLS_DEMUXER_LAVF_OPTIONS = "live_start_index=-8,http_persistent=0,seg_max_retry=5"
 HLS_STREAM_LAVF_OPTIONS = (
     "reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,"
     "reconnect_delay_max=5,reconnect_max_retries=10,rw_timeout=15000000"
+)
+HLS_CACHE_OPTIONS = {
+    "cache": "yes",
+    "cache-pause": "yes",
+    "cache-pause-initial": "no",
+    "cache-pause-wait": "2.5",
+    "demuxer-readahead-secs": "30",
+    "demuxer-max-bytes": "300MiB",
+}
+DEFAULT_CACHE_OPTIONS = {
+    "cache": "auto",
+    "cache-pause": "yes",
+    "cache-pause-initial": "no",
+    "cache-pause-wait": "1",
+    "demuxer-readahead-secs": "1",
+    "demuxer-max-bytes": "150MiB",
+}
+PLAYBACK_DIAGNOSTIC_INTERVAL_MS = 1000
+PLAYBACK_DIAGNOSTIC_HEARTBEAT_SECONDS = 20
+PLAYBACK_LOW_CACHE_SECONDS = 6
+PLAYBACK_STARVED_CACHE_SECONDS = 1
+HLS_LOW_CACHE_RELOAD_SECONDS = 10
+HLS_FORCE_RESUME_AFTER_SECONDS = 4
+HLS_FORCE_RESUME_CACHE_SECONDS = 2.5
+PLAYBACK_DIAGNOSTIC_PROPERTIES = (
+    "demuxer-cache-duration",
+    "demuxer-cache-time",
+    "cache-buffering-state",
+    "paused-for-cache",
+    "cache-speed",
+    "demuxer-cache-idle",
+    "eof-reached",
+    "core-idle",
+    "idle-active",
+    "demuxer-via-network",
+    "time-pos",
+    "demuxer-cache-state",
 )
 
 class QualityButton(QPushButton):
@@ -270,6 +308,10 @@ class CoachellaApp(QMainWindow):
         self.sabr_reconnect_attempts = 0
         self.hls_reconnect_attempts = 0
         self.is_closing = False
+        self.last_playback_diag_log = 0
+        self.last_playback_diag_state = None
+        self.low_cache_since = None
+        self.last_hls_force_resume = 0
 
         with open("config.json", "r") as f:
             config = json.load(f)
@@ -281,7 +323,14 @@ class CoachellaApp(QMainWindow):
         else:
             self.schedule_data = {}
 
-        self.player = mpv.MPV(vo='gpu', ytdl=True, input_default_bindings=True, input_vo_keyboard=True, log_handler=print)
+        self.player = mpv.MPV(
+            vo='gpu',
+            ytdl=True,
+            input_default_bindings=True,
+            input_vo_keyboard=True,
+            log_handler=self.handle_mpv_log,
+            loglevel='warn',
+        )
         # Use the bundled yt-dlp build so mpv and the sync scripts resolve YouTube the same way.
         ytdl_name = "yt-dlp_sabr.exe" if sys.platform.startswith("win") else "yt-dlp_sabr"
         self.ytdl_path = os.path.abspath(ytdl_name)
@@ -404,6 +453,10 @@ class CoachellaApp(QMainWindow):
         self.blink_timer.timeout.connect(self.toggle_blink)
         self.blink_timer.start(500)
 
+        self.playback_diag_timer = QTimer(self)
+        self.playback_diag_timer.timeout.connect(self.log_playback_diagnostics)
+        self.playback_diag_timer.start(PLAYBACK_DIAGNOSTIC_INTERVAL_MS)
+
         self.load_stream(self.current_stage_index)
 
     def on_quality_clicked(self):
@@ -417,6 +470,11 @@ class CoachellaApp(QMainWindow):
         self.stack.setCurrentIndex(index)
         self.day_buttons[index].setChecked(True)
         self.sync_header(self.scroll_areas[index].horizontalScrollBar().value())
+
+    def handle_mpv_log(self, level, prefix, text):
+        text = text.rstrip()
+        if text:
+            print(f"[mpv:{level}:{prefix}] {text}")
 
     def build_ytdl_format(self, height):
         if is_sabr_height(height):
@@ -482,10 +540,168 @@ class CoachellaApp(QMainWindow):
     def use_hls_network_options(self):
         self.player['demuxer-lavf-o'] = HLS_DEMUXER_LAVF_OPTIONS
         self.player['stream-lavf-o'] = HLS_STREAM_LAVF_OPTIONS
+        self.apply_player_options(HLS_CACHE_OPTIONS)
 
     def clear_hls_network_options(self):
         self.player['demuxer-lavf-o'] = ""
         self.player['stream-lavf-o'] = ""
+        self.apply_player_options(DEFAULT_CACHE_OPTIONS)
+
+    def apply_player_options(self, options):
+        for name, value in options.items():
+            self.player[name] = value
+
+    def safe_player_property(self, name):
+        try:
+            return self.player._get_property(name, decoder=mpv.lazy_decoder)
+        except Exception:
+            return None
+
+    def log_playback_diagnostics(self, force=False, reason=None):
+        if self.is_closing:
+            return
+
+        now = time.monotonic()
+        values = {name: self.safe_player_property(name) for name in PLAYBACK_DIAGNOSTIC_PROPERTIES}
+        cache_seconds = self.as_float(values.get("demuxer-cache-duration"))
+        paused_for_cache = bool(values.get("paused-for-cache"))
+        buffering_state = self.as_float(values.get("cache-buffering-state"))
+        eof_reached = bool(values.get("eof-reached"))
+        core_idle = bool(values.get("core-idle"))
+        idle_active = bool(values.get("idle-active"))
+
+        if cache_seconds is not None and cache_seconds <= PLAYBACK_LOW_CACHE_SECONDS:
+            if self.low_cache_since is None:
+                self.low_cache_since = now
+        else:
+            self.low_cache_since = None
+        low_for = None if self.low_cache_since is None else now - self.low_cache_since
+
+        state = "ok"
+        if eof_reached:
+            state = "eof"
+        elif paused_for_cache:
+            state = "paused-for-cache"
+        elif core_idle or idle_active:
+            state = "idle"
+        elif cache_seconds is not None and cache_seconds <= PLAYBACK_STARVED_CACHE_SECONDS:
+            state = "starved"
+        elif cache_seconds is not None and cache_seconds <= PLAYBACK_LOW_CACHE_SECONDS:
+            state = "low-cache"
+        elif buffering_state not in (None, 100):
+            state = "buffering"
+
+        should_log = force
+        should_log = should_log or state != self.last_playback_diag_state
+        should_log = should_log or state != "ok"
+        should_log = should_log or (now - self.last_playback_diag_log) >= PLAYBACK_DIAGNOSTIC_HEARTBEAT_SECONDS
+        should_reload_hls = (
+            not force
+            and not is_sabr_height(self.current_quality_height)
+            and not self.hls_reconnect_timer.isActive()
+            and self.hls_reconnect_attempts < MAX_HLS_RECONNECT_ATTEMPTS
+            and low_for is not None
+            and low_for >= HLS_LOW_CACHE_RELOAD_SECONDS
+        )
+        should_force_resume_hls = (
+            not force
+            and not is_sabr_height(self.current_quality_height)
+            and paused_for_cache
+            and cache_seconds is not None
+            and cache_seconds >= HLS_FORCE_RESUME_CACHE_SECONDS
+            and low_for is not None
+            and low_for >= HLS_FORCE_RESUME_AFTER_SECONDS
+            and (now - self.last_hls_force_resume) >= HLS_FORCE_RESUME_AFTER_SECONDS
+        )
+        if should_reload_hls:
+            should_log = True
+        if should_force_resume_hls:
+            should_log = True
+
+        if not should_log:
+            return
+
+        self.last_playback_diag_log = now
+        self.last_playback_diag_state = state
+        quality = self.current_quality_height if self.current_quality_height else "auto"
+        mode = "sabr" if is_sabr_height(self.current_quality_height) else "hls"
+        stage = self.stages[self.current_stage_index]["name"] if self.stages else "unknown"
+        cache_state = self.format_cache_state(values.get("demuxer-cache-state"))
+        parts = [
+            f"reason={reason or state}",
+            f"mode={mode}",
+            f"stage={stage}",
+            f"quality={quality}",
+            f"cache={self.format_seconds(cache_seconds)}",
+            f"low_for={self.format_seconds(low_for)}",
+            f"cache_time={self.format_seconds(self.as_float(values.get('demuxer-cache-time')))}",
+            f"buffering={self.format_number(buffering_state)}",
+            f"paused_for_cache={paused_for_cache}",
+            f"cache_speed={self.format_number(self.as_float(values.get('cache-speed')))}",
+            f"demuxer_idle={bool(values.get('demuxer-cache-idle'))}",
+            f"eof={eof_reached}",
+            f"core_idle={core_idle}",
+            f"idle_active={idle_active}",
+            f"network={bool(values.get('demuxer-via-network'))}",
+            f"time_pos={self.format_seconds(self.as_float(values.get('time-pos')))}",
+            f"hls_reconnects={self.hls_reconnect_attempts}",
+            f"sabr_reconnects={self.sabr_reconnect_attempts}",
+            f"cache_state={cache_state}",
+        ]
+        print("[playback-diag] " + " ".join(parts))
+        if should_force_resume_hls:
+            self.last_hls_force_resume = now
+            print(
+                "HLS cache-pause stayed active with "
+                f"{cache_seconds:.1f}s buffered; forcing playback resume"
+            )
+            try:
+                self.player._set_property("pause", False)
+            except Exception as exc:
+                print(f"Unable to force HLS playback resume: {exc}")
+        if should_reload_hls:
+            self.hls_reconnect_attempts += 1
+            print(
+                "HLS cache stayed low for "
+                f"{low_for:.1f}s; reloading stream behind the live edge"
+            )
+            self.hls_reconnect_timer.start(0)
+
+    def as_float(self, value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def format_seconds(self, value):
+        if value is None:
+            return "n/a"
+        return f"{value:.2f}s"
+
+    def format_number(self, value):
+        if value is None:
+            return "n/a"
+        return f"{value:.2f}"
+
+    def format_cache_state(self, state):
+        if not isinstance(state, dict):
+            return "n/a"
+
+        summary = []
+        for key in ("eof", "underrun", "idle", "total-bytes", "fw-bytes", "file-cache-bytes"):
+            if key in state:
+                summary.append(f"{key}={state[key]}")
+
+        ranges = state.get("seekable-ranges")
+        if isinstance(ranges, list) and ranges:
+            last_range = ranges[-1]
+            if isinstance(last_range, dict):
+                start = self.format_seconds(self.as_float(last_range.get("start")))
+                end = self.format_seconds(self.as_float(last_range.get("end")))
+                summary.append(f"ranges={len(ranges)}")
+                summary.append(f"last_range={start}-{end}")
+
+        return ",".join(summary) if summary else str(state)[:160]
 
     def fallback_to_1080_hls(self, reason):
         print(f"{reason}; falling back to 1080p HLS")
@@ -493,6 +709,7 @@ class CoachellaApp(QMainWindow):
         self.hls_reconnect_timer.stop()
         self.sabr_reconnect_attempts = 0
         self.hls_reconnect_attempts = 0
+        self.log_playback_diagnostics(force=True, reason="fallback-to-hls")
         self.sabr_bridge.stop_all()
         self.current_quality_height = 1080
         self.current_ytdl_format = self.build_ytdl_format(1080)
@@ -551,6 +768,9 @@ class CoachellaApp(QMainWindow):
         if not reconnecting:
             self.sabr_reconnect_attempts = 0
             self.hls_reconnect_attempts = 0
+        self.last_playback_diag_state = None
+        self.low_cache_since = None
+        self.last_hls_force_resume = 0
         self.sabr_reconnect_timer.stop()
         self.hls_reconnect_timer.stop()
         if self.is_recording and not reconnecting:
@@ -560,6 +780,13 @@ class CoachellaApp(QMainWindow):
             grid.setSelected(index)
         self.header.setSelected(index)
         data = self.stages[index]
+        mode = "sabr" if is_sabr_height(self.current_quality_height) else "hls"
+        quality = self.current_quality_height if self.current_quality_height else "auto"
+        print(
+            "[playback-diag] load "
+            f"mode={mode} stage={data['name']} quality={quality} reconnecting={reconnecting} "
+            f"ytdl_format={self.current_ytdl_format}"
+        )
         if is_sabr_height(self.current_quality_height):
             try:
                 self.clear_hls_network_options()
@@ -573,9 +800,11 @@ class CoachellaApp(QMainWindow):
             self.use_hls_network_options()
             self.player.loadfile(data["url"], "replace", ytdl_format=self.current_ytdl_format)
         self.player.title = f"{data['name']} - Coachella 2026"
+        self.log_playback_diagnostics(force=True, reason="load-issued")
 
     def closeEvent(self, event):
         self.is_closing = True
+        self.playback_diag_timer.stop()
         self.sabr_reconnect_timer.stop()
         self.hls_reconnect_timer.stop()
         self.sabr_bridge.close()
