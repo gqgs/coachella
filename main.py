@@ -46,6 +46,7 @@ from PySide6.QtCore import Qt, Signal, QTimer, QRect, QPoint
 from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen, QBrush
 import mpv
 from sabr_bridge import SabrBridge, is_sabr_height, build_sabr_format
+from recording_utils import finalize_recording_for_import
 
 PIXELS_PER_HOUR = 150
 START_HOUR = 16 # 4 PM
@@ -313,6 +314,7 @@ class CoachellaApp(QMainWindow):
         self.last_playback_diag_state = None
         self.low_cache_since = None
         self.last_hls_force_resume = 0
+        self.current_recording_file = None
 
         with open("config.json", "r") as f:
             config = json.load(f)
@@ -793,13 +795,23 @@ class CoachellaApp(QMainWindow):
             filename = self.current_recording_filename()
             self.player['stream-record'] = filename
             self.is_recording = True
+            self.current_recording_file = filename
             print(f"Started recording to {filename}")
             self.show_osd_message(f"Recording started: {filename}")
         else:
+            filename = self.current_recording_file
             self.player['stream-record'] = ""
             self.is_recording = False
+            self.current_recording_file = None
             print("Stopped recording")
             self.show_osd_message("Recording stopped")
+            if filename:
+                result = finalize_recording_for_import(filename)
+                print(result.message)
+                if result.success:
+                    self.show_osd_message("Recording finalized for import")
+                else:
+                    self.show_osd_message("Recording finalization failed")
         self.update_all_grids()
 
     def sync_header(self, value):
