@@ -42,8 +42,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QScrollArea, QFrame, QStackedWidget, QPushButton, QButtonGroup
 )
-from PySide6.QtCore import Qt, Signal, QTimer, QRect, QPoint
-from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen, QBrush
+from PySide6.QtCore import Qt, Signal, QTimer, QRect, QPoint, QUrl
+from PySide6.QtGui import QPixmap, QFont, QColor, QPainter, QPen, QBrush, QDesktopServices
 import mpv
 from sabr_bridge import SabrBridge, is_sabr_height, build_sabr_format
 from recording_utils import finalize_recording_for_import
@@ -186,16 +186,40 @@ class DayButton(QPushButton):
         """)
 
 class StageHeader(QWidget):
+    stageClicked = Signal(int)
+
     def __init__(self, stages, parent=None):
         super().__init__(parent)
         self.stages = stages
         self.setFixedHeight(50)
         self.setFixedWidth(TIME_COLUMN_WIDTH + (len(self.stages) * COLUMN_WIDTH))
         self.selected_index = -1
+        self.setMouseTracking(True)
 
     def setSelected(self, index):
         self.selected_index = index
         self.update()
+
+    def stageIndexAt(self, point):
+        if point.x() <= TIME_COLUMN_WIDTH:
+            return -1
+        index = (point.x() - TIME_COLUMN_WIDTH) // COLUMN_WIDTH
+        if 0 <= index < len(self.stages):
+            return index
+        return -1
+
+    def mouseMoveEvent(self, event):
+        if self.stageIndexAt(event.pos()) >= 0:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        index = self.stageIndexAt(event.pos())
+        if index >= 0:
+            self.stageClicked.emit(index)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -419,6 +443,7 @@ class CoachellaApp(QMainWindow):
         main_layout.setSpacing(0)
         
         self.header = StageHeader(self.stages)
+        self.header.stageClicked.connect(self.open_stage_in_browser)
         main_layout.addWidget(self.header)
         
         self.control_bar = QWidget()
@@ -862,6 +887,16 @@ class CoachellaApp(QMainWindow):
     def sync_header(self, value):
         self.header.move(-value, 0)
         self.control_bar.move(-value, self.control_bar.y())
+
+    def open_stage_in_browser(self, index):
+        if not (0 <= index < len(self.stages)):
+            return
+        stage = self.stages[index]
+        url = stage.get("url")
+        if not url:
+            return
+        if not QDesktopServices.openUrl(QUrl(url)):
+            print(f"Could not open browser for {stage['name']}: {url}")
 
     def load_stream(self, index, reconnecting=False):
         if not (0 <= index < len(self.stages)):
