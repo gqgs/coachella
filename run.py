@@ -4,7 +4,7 @@ import json
 import locale
 import time
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -51,6 +51,11 @@ from recording_utils import finalize_recording_for_import
 PIXELS_PER_HOUR = 150
 START_HOUR = 16 # 4 PM
 END_HOUR = 25   # 1 AM next day
+FESTIVAL_DAY_END_HOURS = {
+    "Friday": 25,
+    "Saturday": 25,
+    "Sunday": 24,
+}
 COLUMN_WIDTH = 180
 TIME_COLUMN_WIDTH = 80
 MAX_SABR_RECONNECT_ATTEMPTS = 10
@@ -115,6 +120,23 @@ def display_schedule_time(time_text):
     hour = (total_minutes // 60) % 24
     minute = total_minutes % 60
     return f"{hour:02d}:{minute:02d}"
+
+
+def current_schedule_context(now):
+    time_float = now.hour + (now.minute / 60.0)
+
+    if now.hour < 4:
+        previous_day = (now - timedelta(days=1)).strftime("%A")
+        extended_time = time_float + 24
+        day_end = FESTIVAL_DAY_END_HOURS.get(previous_day)
+        if day_end is not None and extended_time <= day_end:
+            return previous_day, extended_time
+        return None, extended_time
+
+    current_day = now.strftime("%A")
+    if current_day in FESTIVAL_DAY_END_HOURS:
+        return current_day, time_float
+    return None, time_float
 
 
 class QualityButton(QPushButton):
@@ -292,13 +314,9 @@ class ScheduleGrid(QWidget):
             from datetime import timezone, timedelta
             now_pdt = datetime.now(timezone(timedelta(hours=-7)))
         
-        current_day_name = now_pdt.strftime('%A')
+        current_day_name, current_time_float = current_schedule_context(now_pdt)
         
-        if self.day_name.lower() == current_day_name.lower():
-            hour = now_pdt.hour
-            if hour < 4: hour += 24
-            current_time_float = hour + (now_pdt.minute / 60.0)
-            
+        if current_day_name and self.day_name.lower() == current_day_name.lower():
             if START_HOUR <= current_time_float <= self.end_hour:
                 line_y = (current_time_float - START_HOUR) * PIXELS_PER_HOUR
                 painter.setPen(QPen(QColor(255, 0, 0), 3))
@@ -431,7 +449,7 @@ class CoachellaApp(QMainWindow):
         except:
             from datetime import timezone, timedelta
             now_pdt = datetime.now(timezone(timedelta(hours=-7)))
-        current_day_name = now_pdt.strftime('%A')
+        current_day_name, _ = current_schedule_context(now_pdt)
         
         default_page_index = 0
         
@@ -455,7 +473,7 @@ class CoachellaApp(QMainWindow):
                 self.grids.append(grid)
                 self.scroll_areas.append(scroll)
                 
-                if day.lower() == current_day_name.lower():
+                if current_day_name and day.lower() == current_day_name.lower():
                     default_page_index = page_index
 
         control_layout.addStretch(1)
@@ -780,11 +798,12 @@ class CoachellaApp(QMainWindow):
             from datetime import timezone, timedelta
             now_pdt = datetime.now(timezone(timedelta(hours=-7)))
 
-        day_schedule = self.schedule_data.get(now_pdt.strftime("%A"), {})
+        current_day_name, current_time = current_schedule_context(now_pdt)
+        if not current_day_name:
+            return "Unknown Artist"
+
+        day_schedule = self.schedule_data.get(current_day_name, {})
         stage_name = self.stages[self.current_stage_index]["name"]
-        current_time = now_pdt.hour + (now_pdt.minute / 60.0)
-        if now_pdt.hour < 4:
-            current_time += 24
 
         for entry in day_schedule.get(stage_name, []):
             start = self.schedule_time_to_float(entry["start"])
