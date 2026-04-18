@@ -38,7 +38,7 @@ A high-performance desktop application for watching Coachella livestreams with a
 To automatically download the latest descriptions, sync the schedule, and launch the app in one command:
 
 ```bash
-python run.py
+python main.py
 ```
 
 - **Quality Selection**: `Auto`, `1080p`, and `720p` use the standard HLS playback path. `1440p` and `4K` use the bundled SABR-enabled `yt-dlp` fork plus FFmpeg.
