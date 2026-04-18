@@ -45,6 +45,7 @@ Catch the rest of the Coachella livestreams here...
         self.assertEqual(friday[0]["start"], "17:20")
         self.assertEqual(friday[3]["artist"], "Anyma")
         self.assertEqual(friday[3]["start"], "24:00")
+        self.assertEqual(friday[3]["end"], "25:00")
         
         # Check Saturday
         saturday = results["Saturday"]
@@ -52,12 +53,14 @@ Catch the rest of the Coachella livestreams here...
         self.assertEqual(saturday[0]["artist"], "Addison Rae")
         self.assertEqual(saturday[3]["artist"], "Justin Bieber")
         self.assertEqual(saturday[3]["start"], "23:25")
+        self.assertEqual(saturday[3]["end"], "25:00")
         
         # Check Sunday
         sunday = results["Sunday"]
         self.assertEqual(len(sunday), 4)
         self.assertEqual(sunday[0]["artist"], "Wet Leg")
         self.assertEqual(sunday[3]["artist"], "KAROL G")
+        self.assertEqual(sunday[3]["end"], "24:00")
 
 if __name__ == "__main__":
     unittest.main()

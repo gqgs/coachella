@@ -100,6 +100,23 @@ PLAYBACK_DIAGNOSTIC_PROPERTIES = (
     "demuxer-cache-state",
 )
 
+
+def schedule_time_to_minutes(time_text):
+    hour, minute = map(int, time_text.split(":"))
+    return (hour * 60) + minute
+
+
+def schedule_time_to_float(time_text):
+    return schedule_time_to_minutes(time_text) / 60.0
+
+
+def display_schedule_time(time_text):
+    total_minutes = schedule_time_to_minutes(time_text)
+    hour = (total_minutes // 60) % 24
+    minute = total_minutes % 60
+    return f"{hour:02d}:{minute:02d}"
+
+
 class QualityButton(QPushButton):
     def __init__(self, label, height_val, parent=None):
         super().__init__(label, parent)
@@ -183,9 +200,20 @@ class ScheduleGrid(QWidget):
         self.stages = stages
         self.app_ref = app_ref
         self.selected_index = -1
+        self.end_hour = self.schedule_end_hour()
         self.setFixedWidth(TIME_COLUMN_WIDTH + (len(self.stages) * COLUMN_WIDTH))
-        self.setFixedHeight((END_HOUR - START_HOUR) * PIXELS_PER_HOUR + 50)
+        self.setFixedHeight((self.end_hour - START_HOUR) * PIXELS_PER_HOUR + 50)
         self.setMouseTracking(True)
+
+    def schedule_end_hour(self):
+        latest_minutes = END_HOUR * 60
+        for stage_artists in self.day_schedule.values():
+            for entry in stage_artists:
+                try:
+                    latest_minutes = max(latest_minutes, schedule_time_to_minutes(entry.get("end", entry["start"])))
+                except Exception:
+                    pass
+        return max(END_HOUR, (latest_minutes + 59) // 60)
         
     def setSelected(self, index):
         self.selected_index = index
@@ -220,7 +248,7 @@ class ScheduleGrid(QWidget):
                 painter.fillRect(x, 0, COLUMN_WIDTH, self.height(), base_color)
 
         painter.setFont(QFont("Arial", 10))
-        for h in range(START_HOUR, END_HOUR + 1):
+        for h in range(START_HOUR, self.end_hour + 1):
             y = (h - START_HOUR) * PIXELS_PER_HOUR
             display_h = h if h <= 12 else h - 12
             if h >= 24: display_h = h - 24
@@ -237,11 +265,8 @@ class ScheduleGrid(QWidget):
             artists = self.day_schedule.get(stage["name"], [])
             for entry in artists:
                 try:
-                    def to_float_hour(t_str):
-                        h, m = map(int, t_str.split(':'))
-                        return h + m/60.0
-                    s_h = to_float_hour(entry["start"])
-                    e_h = to_float_hour(entry.get("end", entry["start"]))
+                    s_h = schedule_time_to_float(entry["start"])
+                    e_h = schedule_time_to_float(entry.get("end", entry["start"]))
                     y_start = (s_h - START_HOUR) * PIXELS_PER_HOUR
                     y_end = (e_h - START_HOUR) * PIXELS_PER_HOUR
                     rect = QRect(x, int(y_start), COLUMN_WIDTH - 10, int(y_end - y_start))
@@ -255,7 +280,9 @@ class ScheduleGrid(QWidget):
                     painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
                     painter.drawText(rect.adjusted(8, 8, -8, -20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, entry["artist"])
                     painter.setFont(QFont("Arial", 9))
-                    painter.drawText(rect.adjusted(8, 0, -8, -8), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, f"{entry['start']}-{entry.get('end', '??')}")
+                    start_text = display_schedule_time(entry["start"])
+                    end_text = display_schedule_time(entry["end"]) if "end" in entry else "??"
+                    painter.drawText(rect.adjusted(8, 0, -8, -8), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, f"{start_text}-{end_text}")
                 except Exception: pass
 
         # Timeline logic: Only draw if this tab's day matches the current system day
@@ -272,7 +299,7 @@ class ScheduleGrid(QWidget):
             if hour < 4: hour += 24
             current_time_float = hour + (now_pdt.minute / 60.0)
             
-            if START_HOUR <= current_time_float <= END_HOUR:
+            if START_HOUR <= current_time_float <= self.end_hour:
                 line_y = (current_time_float - START_HOUR) * PIXELS_PER_HOUR
                 painter.setPen(QPen(QColor(255, 0, 0), 3))
                 painter.drawLine(TIME_COLUMN_WIDTH, int(line_y), self.width(), int(line_y))
@@ -767,8 +794,7 @@ class CoachellaApp(QMainWindow):
         return "Unknown Artist"
 
     def schedule_time_to_float(self, time_text):
-        hour, minute = map(int, time_text.split(":"))
-        return hour + (minute / 60.0)
+        return schedule_time_to_float(time_text)
 
     def safe_filename_part(self, value):
         value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", value)

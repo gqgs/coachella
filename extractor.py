@@ -1,5 +1,39 @@
 import re
 
+
+DAY_END_LIMITS = {
+    "Friday": 25 * 60,
+    "Saturday": 25 * 60,
+    "Sunday": 24 * 60,
+}
+
+
+def parse_schedule_time(time_str):
+    time_str = time_str.replace(" ", "").lower()
+    h_m = re.match(r"(\d{1,2}):(\d{2})(am|pm)", time_str)
+    if not h_m:
+        return None
+
+    hour = int(h_m.group(1))
+    minute = int(h_m.group(2))
+    period = h_m.group(3)
+
+    if period == "pm" and hour != 12:
+        hour += 12
+    if period == "am" and hour == 12:
+        hour = 24
+    if period == "am" and hour < 4:
+        hour += 24
+
+    return (hour * 60) + minute
+
+
+def format_schedule_time(total_minutes):
+    hour = total_minutes // 60
+    minute = total_minutes % 60
+    return f"{hour:02d}:{minute:02d}"
+
+
 def parse_multi_day_schedule(text):
     """
     Parses a Coachella description text into a dictionary of days.
@@ -38,8 +72,7 @@ def parse_multi_day_schedule(text):
         matches = re.findall(pattern, section)
         
         parsed_artists = []
-        for j in range(len(matches)):
-            time_str, artist_line = matches[j]
+        for time_str, artist_line in matches:
             artist = artist_line.split('\n')[0].strip()
             
             # Filter meta-lines
@@ -49,48 +82,39 @@ def parse_multi_day_schedule(text):
             if len(artist) < 2:
                 continue
 
-            try:
-                # Normalize time to HH:MM (24h)
-                time_str = time_str.replace(" ", "").lower()
-                h_m = re.match(r"(\d{1,2}):(\d{2})(am|pm)", time_str)
-                if not h_m: continue
-                
-                h = int(h_m.group(1))
-                m = h_m.group(2)
-                period = h_m.group(3)
-                
-                if period == "pm" and h != 12: h += 12
-                if period == "am" and h == 12: h = 24
-                if period == "am" and h < 4: h += 24 # Handle 1 AM as 25:00
-                
-                start_time = f"{h:02d}:{m}"
-                
-                # Estimate end time based on next slot
-                if j + 1 < len(matches):
-                    nt_str = matches[j+1][0].replace(" ", "").lower()
-                    nh_m = re.match(r"(\d{1,2}):(\d{2})(am|pm)", nt_str)
-                    if nh_m:
-                        nh = int(nh_m.group(1))
-                        nm = nh_m.group(2)
-                        np = nh_m.group(3)
-                        if np == "pm" and nh != 12: nh += 12
-                        if np == "am" and nh == 12: nh = 24
-                        if np == "am" and nh < 4: nh += 24
-                        end_time = f"{nh:02d}:{nm}"
-                    else:
-                        end_time = f"{h+1:02d}:{m}"
-                else:
-                    end_time = f"{h+1:02d}:{m}" # Default 1 hour
-                
-                parsed_artists.append({
-                    "artist": artist,
-                    "start": start_time,
-                    "end": end_time
-                })
-            except Exception:
+            start_minutes = parse_schedule_time(time_str)
+            if start_minutes is None:
                 continue
-        
+
+            parsed_artists.append({
+                "artist": artist,
+                "start": format_schedule_time(start_minutes),
+                "_start_minutes": start_minutes
+            })
+
         if parsed_artists:
-            results[day_name] = parsed_artists
+            day_end_limit = DAY_END_LIMITS.get(day_name)
+            durations = []
+            schedule_artists = []
+            for j, artist in enumerate(parsed_artists):
+                start_minutes = artist["_start_minutes"]
+                if j + 1 < len(parsed_artists):
+                    end_minutes = parsed_artists[j + 1]["_start_minutes"]
+                    duration = end_minutes - start_minutes
+                    if duration > 0:
+                        durations.append(duration)
+                else:
+                    duration = max(durations) if durations else 60
+                    end_minutes = start_minutes + duration
+                if day_end_limit is not None:
+                    end_minutes = min(end_minutes, day_end_limit)
+
+                schedule_artists.append({
+                    "artist": artist["artist"],
+                    "start": artist["start"],
+                    "end": format_schedule_time(end_minutes)
+                })
+
+            results[day_name] = schedule_artists
             
     return results
