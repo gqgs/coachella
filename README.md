@@ -2,6 +2,8 @@
 
 A high-performance desktop application for watching Coachella livestreams with a perfectly synced, interactive schedule. Built with Python, PySide6, and mpv.
 
+<img width="1379" height="900" alt="image" src="https://github.com/user-attachments/assets/f6eb2b1b-d9ce-4179-9dfb-024465b1b7d8" />
+
 ## Features
 
 - **Interactive Schedule**: A programmatically rendered, scrollable grid showing the full lineup across all 7 stages.
